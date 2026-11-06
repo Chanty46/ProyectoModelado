@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+**/secrets.py
+*.pem
+*.key
+node_modules/
+bin/
+obj/
+dist/

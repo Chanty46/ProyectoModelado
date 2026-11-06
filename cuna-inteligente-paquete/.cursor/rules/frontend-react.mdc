@@ -1,0 +1,11 @@
+---
+description: Reglas para el frontend React + TypeScript
+globs: frontend/**
+alwaysApply: false
+---
+- React + TypeScript estricto (`strict: true`), Vite, Tailwind, shadcn/ui, Recharts, React Router. Sin `any`.
+- Solo variables `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` y `VITE_API_BASE_URL`. Jamás la clave secreta.
+- Lectura de datos y Realtime con supabase-js (protegido por RLS). Comandos a la cuna y acciones administrativas: solo vía API del backend.
+- Diseño limpio, profesional y calmado (supervisión infantil): paleta suave, buen contraste, tipografía legible, responsive (móvil primero), estados de carga y error, etiquetas accesibles y navegación por teclado.
+- Panel: actualización reactiva < 1 s (IU-01); cambio de perfil en ≤ 2 toques (IU-02).
+- Tras cerrar sesión, limpiar el estado local. No guardar datos del bebé en localStorage.

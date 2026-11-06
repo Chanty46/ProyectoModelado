@@ -1,0 +1,12 @@
+---
+description: Reglas para el backend C# (.NET)
+globs: backend/**
+alwaysApply: false
+---
+- Estructura: `backend/CunaServer/` con carpetas Api/, Tcp/, Telegram/, Services/, Data/; pruebas en `backend/CunaServer.Tests/`.
+- Minimal API de ASP.NET Core; servicios en segundo plano con `BackgroundService`. `async/await` en todo el I/O; pasa `CancellationToken`.
+- Configuración solo con `IConfiguration` y variables de entorno (`backend/.env.example` lista los nombres). Sin valores secretos en código.
+- Endpoints para la web: validar el JWT de Supabase (JWKS del proyecto), luego comprobar membresía y rol en la base. Acción no permitida → HTTP 403 y registro en `bitacora_seguridad`.
+- Servidor TCP: una línea JSON por mensaje (ver `docs/PROTOCOL.md`), línea máxima 4 KB, `hello` obligatorio en 5 s, cierre tras 3 autenticaciones fallidas, comparación de tokens en tiempo constante, hash en BD.
+- Cada sesión de dispositivo: `device_id` autenticado → cuna → `family_id` leídos de la BD.
+- Pruebas xUnit para protocolo, estados (Modo Atención, retiro, watchdog) y autorización.

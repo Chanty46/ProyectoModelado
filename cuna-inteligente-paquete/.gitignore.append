@@ -1,0 +1,9 @@
+# --- adicionales del proyecto ---
+node_modules/
+dist/
+bin/
+obj/
+__pycache__/
+.venv/
+*.pem
+*.key

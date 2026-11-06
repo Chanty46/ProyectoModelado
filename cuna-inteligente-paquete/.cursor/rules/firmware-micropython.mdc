@@ -1,0 +1,12 @@
+---
+description: Reglas para firmware MicroPython (Pico W) y simuladores
+globs: firmware/**, simulators/**
+alwaysApply: false
+---
+- MicroPython compatible con Pico W. Un directorio por dispositivo: `firmware/central|colchon|movil|biberon|juguete`, más `firmware/common` (red, protocolo, búfer, configuración).
+- Credenciales y datos de red solo en `secrets.py` (ignorado por Git); plantilla en `firmware/secrets.example.py`.
+- Capa de hardware separada de la lógica; pines en `pins.py` marcados como propuesta. Lógica de reglas (umbrales, retiro, juego) en funciones puras que se puedan probar en PC.
+- Bucle no bloqueante (`uasyncio`), reconexión con espera creciente (1, 2, 4… hasta 30 s), heartbeat cada 15 s, watchdog de hardware.
+- Memoria limitada (≈2 MB de flash): sin librerías pesadas, sin audio grabado largo; búfer offline con registros agregados por minuto, cola circular con número de secuencia.
+- Marca `TODO-HW` donde haga falta hardware real. No inventes conexiones.
+- Simuladores en `simulators/` (Python 3) que hablan el mismo protocolo (`docs/PROTOCOL.md`) para probar sin Picos.

@@ -1,0 +1,12 @@
+---
+description: Reglas para migraciones y políticas de Supabase
+globs: supabase/**
+alwaysApply: false
+---
+- Un archivo de migración por cambio en `supabase/migrations/` (`AAAAMMDDHHMMSS_descripcion.sql`). No edites migraciones ya aplicadas; crea una nueva.
+- Toda tabla: `enable row level security` en la misma migración, más políticas explícitas separadas por operación (select/insert/update/delete) y por rol (`authenticated`). Nada para `anon`.
+- Políticas basadas en membresía: el usuario pertenece a la familia si existe fila en `usuarios` con su `auth.uid()`. Roles `principal` y `secundario` también salen de `usuarios`.
+- Funciones auxiliares `security definer` con `set search_path = ''` y mínimo privilegio.
+- Datos que escribe solo el backend (telemetría, eventos): sin política de insert para `authenticated`; el backend usa la clave secreta.
+- Incluye pruebas SQL de aislamiento: un usuario de la familia A no ve ni modifica datos de la familia B.
+- Índice `(cuna_id, ts)` en telemetría; retención y tamaño acordes al límite de 500 MB del plan gratuito.
