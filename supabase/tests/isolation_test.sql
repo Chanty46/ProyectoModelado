@@ -130,6 +130,16 @@ BEGIN
     IF v_filas_afectadas <> 0 THEN
         RAISE EXCEPTION 'Fallo RF03: usuario secundario pudo eliminar un bebé.';
     END IF;
+
+    -- Secundario NO puede crear perfiles de cuidador (RF23 reservado a Principal)
+    BEGIN
+        INSERT INTO public.perfiles_cuidador (family_id, nombre)
+        VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Perfil no autorizado');
+        RAISE EXCEPTION 'Fallo RF23: usuario secundario pudo crear un perfil de cuidador.';
+    EXCEPTION
+        WHEN insufficient_privilege THEN
+            NULL; -- Esperado por RLS
+    END;
 END;
 $$;
 

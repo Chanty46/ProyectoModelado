@@ -47,7 +47,7 @@ CREATE TABLE public.invitaciones (
     creado_por uuid REFERENCES public.usuarios(id) ON DELETE SET NULL,
     hash_codigo text NOT NULL UNIQUE CHECK (char_length(hash_codigo) >= 32),
     expira_en timestamptz NOT NULL,
-    intentos integer NOT NULL DEFAULT 0 CHECK (intentos >= 0 AND intentos <= 10),
+    intentos integer NOT NULL DEFAULT 0 CHECK (intentos BETWEEN 0 AND 5),
     usada boolean NOT NULL DEFAULT false,
     usada_por uuid REFERENCES public.usuarios(id) ON DELETE SET NULL,
     usada_en timestamptz,
@@ -61,7 +61,7 @@ CREATE TABLE public.telegram_vinculos (
     hash_codigo text CHECK (hash_codigo IS NULL OR char_length(hash_codigo) >= 32),
     codigo_expira_en timestamptz,
     codigo_usado boolean NOT NULL DEFAULT false,
-    intentos integer NOT NULL DEFAULT 0 CHECK (intentos >= 0 AND intentos <= 10),
+    intentos integer NOT NULL DEFAULT 0 CHECK (intentos BETWEEN 0 AND 5),
     vinculado_en timestamptz,
     creado_en timestamptz NOT NULL DEFAULT now()
 );
@@ -73,7 +73,7 @@ CREATE TABLE public.telegram_vinculos (
 CREATE TABLE public.cunas (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     family_id uuid NOT NULL REFERENCES public.familias(id) ON DELETE CASCADE,
-    nombre text NOT NULL CHECK (char_length(btrim(nombre)) BETWEEN 1 AND 60),
+    nombre text NOT NULL CHECK (char_length(btrim(nombre)) BETWEEN 1 AND 30),
     estado_conexion text NOT NULL DEFAULT 'desconectada'
         CHECK (estado_conexion IN ('en_linea', 'desconectada')),
     modo_operacion text NOT NULL DEFAULT 'monitoreo'
@@ -93,6 +93,7 @@ CREATE TABLE public.dispositivos (
     tipo text NOT NULL CHECK (tipo IN ('central', 'colchon', 'movil', 'biberon', 'juguete')),
     hash_reclamo text CHECK (hash_reclamo IS NULL OR char_length(hash_reclamo) >= 32),
     reclamo_expira_en timestamptz,
+    reclamo_usado boolean NOT NULL DEFAULT false,
     intentos_reclamo integer NOT NULL DEFAULT 0 CHECK (intentos_reclamo BETWEEN 0 AND 5),
     hash_token text CHECK (hash_token IS NULL OR char_length(hash_token) >= 32),
     estado text NOT NULL DEFAULT 'sin_dueno'
@@ -111,6 +112,7 @@ CREATE TABLE public.umbrales (
     hum_min numeric(4,1) NOT NULL DEFAULT 40.0 CHECK (hum_min BETWEEN 10.0 AND 80.0),
     hum_max numeric(4,1) NOT NULL DEFAULT 60.0 CHECK (hum_max BETWEEN 20.0 AND 95.0 AND hum_max > hum_min),
     movimiento_umbral numeric(6,3) NOT NULL DEFAULT 0.150 CHECK (movimiento_umbral > 0 AND movimiento_umbral <= 10.000),
+    movimiento_alerta_activa boolean NOT NULL DEFAULT true,
     ruido_masa_piso numeric(6,3) NOT NULL DEFAULT 0.010 CHECK (ruido_masa_piso >= 0 AND ruido_masa_piso <= 1.000),
     actualizado_en timestamptz NOT NULL DEFAULT now()
 );
@@ -213,7 +215,7 @@ CREATE TABLE public.uso_juguetes (
     duracion integer NOT NULL CHECK (duracion >= 0 AND duracion <= 86400),
     aciertos integer CHECK (aciertos IS NULL OR aciertos >= 0),
     patron text,
-    velocidad integer CHECK (velocidad IS NULL OR (velocidad BETWEEN 1 AND 10))
+    velocidad text CHECK (velocidad IS NULL OR velocidad IN ('lenta', 'media', 'rapida'))
 );
 
 CREATE TABLE public.bitacora (
@@ -298,6 +300,8 @@ EXECUTE FUNCTION public.calcular_sesion_alimentacion();
 -- -----------------------------------------------------------------------------
 
 CREATE INDEX idx_telemetria_cuna_ts ON public.telemetria (cuna_id, ts DESC);
+CREATE UNIQUE INDEX idx_telemetria_dispositivo_seq ON public.telemetria (dispositivo_id, seq)
+    WHERE dispositivo_id IS NOT NULL AND seq IS NOT NULL;
 CREATE INDEX idx_usuarios_family_id ON public.usuarios (family_id);
 CREATE INDEX idx_perfiles_family_id ON public.perfiles_cuidador (family_id) WHERE activo IS TRUE;
 CREATE INDEX idx_cunas_family_id ON public.cunas (family_id);
@@ -426,10 +430,13 @@ GRANT EXECUTE ON FUNCTION public.es_miembro_bebe(uuid) TO authenticated;
 
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC, anon;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC, anon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC, anon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM PUBLIC, anon;
 
 GRANT SELECT, UPDATE ON public.familias TO authenticated;
 GRANT SELECT, DELETE ON public.usuarios TO authenticated;
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.perfiles_cuidador TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON public.perfiles_cuidador TO authenticated;
 GRANT SELECT ON public.invitaciones TO authenticated;
 GRANT SELECT, DELETE ON public.telegram_vinculos TO authenticated;
 GRANT SELECT, UPDATE ON public.cunas TO authenticated;
@@ -528,23 +535,19 @@ CREATE POLICY usuarios_delete_principal ON public.usuarios
     FOR DELETE TO authenticated
     USING (public.es_principal_familia(family_id) AND id <> auth.uid() AND rol = 'secundario');
 
--- perfiles_cuidador
+-- perfiles_cuidador (RF23: miembros leen para selector IU-02; solo Principal crea/edita/da de baja lógica)
 CREATE POLICY perfiles_select_miembro ON public.perfiles_cuidador
     FOR SELECT TO authenticated
     USING (public.es_miembro_familia(family_id));
 
-CREATE POLICY perfiles_insert_miembro ON public.perfiles_cuidador
+CREATE POLICY perfiles_insert_principal ON public.perfiles_cuidador
     FOR INSERT TO authenticated
-    WITH CHECK (public.es_miembro_familia(family_id));
+    WITH CHECK (public.es_principal_familia(family_id));
 
-CREATE POLICY perfiles_update_miembro ON public.perfiles_cuidador
+CREATE POLICY perfiles_update_principal ON public.perfiles_cuidador
     FOR UPDATE TO authenticated
-    USING (public.es_miembro_familia(family_id))
-    WITH CHECK (public.es_miembro_familia(family_id));
-
-CREATE POLICY perfiles_delete_principal ON public.perfiles_cuidador
-    FOR DELETE TO authenticated
-    USING (public.es_principal_familia(family_id));
+    USING (public.es_principal_familia(family_id))
+    WITH CHECK (public.es_principal_familia(family_id));
 
 -- invitaciones (solo el Principal ve las invitaciones de su familia; backend inserta/consume)
 CREATE POLICY invitaciones_select_principal ON public.invitaciones

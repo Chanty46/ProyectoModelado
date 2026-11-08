@@ -93,7 +93,22 @@ public class DatabaseMigrationSchemaTests
         var sql = ReadInitialMigration();
 
         Assert.Contains("CREATE INDEX idx_telemetria_cuna_ts ON public.telemetria (cuna_id, ts DESC);", sql);
+        Assert.Contains("CREATE UNIQUE INDEX idx_telemetria_dispositivo_seq ON public.telemetria (dispositivo_id, seq)", sql);
         Assert.Contains("ALTER PUBLICATION supabase_realtime ADD TABLE", sql);
+        Assert.Contains("ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC, anon;", sql);
+    }
+
+    [Fact]
+    public void Migration_EnforcesRf23Rf26Rf29AndAttemptLimits()
+    {
+        var sql = ReadInitialMigration();
+
+        Assert.Contains("nombre text NOT NULL CHECK (char_length(btrim(nombre)) BETWEEN 1 AND 30)", sql);
+        Assert.Contains("movimiento_alerta_activa boolean NOT NULL DEFAULT true", sql);
+        Assert.Contains("reclamo_usado boolean NOT NULL DEFAULT false", sql);
+        Assert.Contains("CREATE POLICY perfiles_insert_principal ON public.perfiles_cuidador", sql);
+        Assert.Contains("CREATE POLICY perfiles_update_principal ON public.perfiles_cuidador", sql);
+        Assert.DoesNotContain("GRANT SELECT, INSERT, UPDATE, DELETE ON public.perfiles_cuidador", sql);
     }
 
     [Fact]
