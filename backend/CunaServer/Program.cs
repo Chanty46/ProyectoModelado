@@ -53,6 +53,7 @@ else
 
 builder.Services.AddSingleton<FamilyAccountService>();
 builder.Services.AddSingleton<DeviceTcpServer>();
+builder.Services.AddSingleton<IntercomAudioService>();
 if (!string.Equals(builder.Configuration["TCP_SERVER_ENABLED"], "false", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddHostedService(sp => sp.GetRequiredService<DeviceTcpServer>());
@@ -64,6 +65,7 @@ app.UseCors("WebFrontend");
 
 app.MapHealthEndpoints();
 app.MapAccountAndFamilyEndpoints();
+app.MapIntercomEndpoints();
 
 await app.RunAsync();
 

@@ -9,6 +9,7 @@ namespace CunaServer.Data;
 public interface IDeviceTelemetryRepository
 {
     Task<RegisteredDevice?> GetDeviceByDeviceIdAsync(string deviceId, CancellationToken ct);
+    Task<RegisteredDevice?> GetCentralDeviceForCribAsync(Guid cunaId, CancellationToken ct);
     Task<CribConfig> GetCribConfigAsync(Guid cunaId, Guid familyId, CancellationToken ct);
     Task RecordHeartbeatAsync(Guid deviceRowId, Guid cunaId, string deviceType, int? batteryPct, string? fwVersion, DateTimeOffset now, CancellationToken ct);
     Task<bool> TryAdvanceSeqAsync(Guid deviceRowId, long seq, CancellationToken ct);
@@ -91,6 +92,15 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
     {
         _devicesByDeviceId.TryGetValue(deviceId, out var device);
         return Task.FromResult(device);
+    }
+
+    public Task<RegisteredDevice?> GetCentralDeviceForCribAsync(Guid cunaId, CancellationToken ct)
+    {
+        var central = _devicesByDeviceId.Values.FirstOrDefault(d =>
+            d.CunaId == cunaId &&
+            d.Tipo == DeviceTypes.Central &&
+            d.Estado is not ("revocado" or "sin_dueno"));
+        return Task.FromResult(central);
     }
 
     public Task<CribConfig> GetCribConfigAsync(Guid cunaId, Guid familyId, CancellationToken ct)
@@ -262,6 +272,42 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
             cuna.FamilyId,
             d.Tipo,
             d.HashToken,
+            d.Estado,
+            d.BateriaPct,
+            d.UltimoSeq,
+            d.UltimoHeartbeat,
+            d.FwVersion);
+    }
+
+    public async Task<RegisteredDevice?> GetCentralDeviceForCribAsync(Guid cunaId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<DeviceRowDto>>(
+            $"dispositivos?cuna_id=eq.{cunaId}&tipo=eq.central&select=id,device_id,cuna_id,tipo,hash_token,estado,bateria_pct,ultimo_seq,ultimo_heartbeat,fw_version&limit=1",
+            JsonOptions,
+            ct);
+        var d = rows?.FirstOrDefault();
+        if (d is null || d.CunaId is null || d.Estado is "revocado" or "sin_dueno")
+        {
+            return null;
+        }
+
+        var cunas = await _http.GetFromJsonAsync<List<CunaOwnerDto>>(
+            $"cunas?id=eq.{cunaId}&select=id,family_id,escala_masa&limit=1",
+            JsonOptions,
+            ct);
+        var cuna = cunas?.FirstOrDefault();
+        if (cuna is null)
+        {
+            return null;
+        }
+
+        return new RegisteredDevice(
+            d.Id,
+            d.DeviceId,
+            cunaId,
+            cuna.FamilyId,
+            d.Tipo,
+            d.HashToken ?? "",
             d.Estado,
             d.BateriaPct,
             d.UltimoSeq,

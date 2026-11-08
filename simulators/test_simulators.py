@@ -1,5 +1,6 @@
 import unittest
 from protocol_client import (
+    CentralAudioPlayer,
     CentralEnvRuleEngine,
     MattressRuleEngine,
     OfflineRingBuffer,
@@ -81,6 +82,18 @@ class SimulatorProtocolAndRulesTests(unittest.TestCase):
     def test_envelope_rejects_lines_over_4kb(self) -> None:
         with self.assertRaises(ValueError):
             build_envelope("telemetry", 1, {"huge": "x" * 5000})
+
+    def test_rf11_central_audio_player_decodes_pcm_and_computes_pwm_duty(self) -> None:
+        import base64
+
+        player = CentralAudioPlayer()
+        pcm_samples = bytes([128, 160, 96, 180] * 100)  # 400 muestras a 8 kHz = 50 ms
+        b64 = base64.b64encode(pcm_samples).decode("ascii")
+        stats = player.process_audio_chunk({"rate": 8000, "seq": 1, "pcm_b64": b64})
+        self.assertEqual(stats["samples"], 400)
+        self.assertEqual(stats["duration_ms"], 50.0)
+        self.assertEqual(player.chunks_received, 1)
+        self.assertEqual(player.samples_played, 400)
 
 
 if __name__ == "__main__":
