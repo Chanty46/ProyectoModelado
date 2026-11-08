@@ -21,6 +21,7 @@ import {
 } from "../lib/api";
 import { IntercomPushToTalk } from "./IntercomPushToTalk";
 import { LiveCribPanel } from "./LiveCribPanel";
+import { FeedingToysAndHistoryPanel } from "./FeedingToysAndHistoryPanel";
 
 interface CribAndDeviceManagerProps {
   accessToken: string;
@@ -430,6 +431,15 @@ export function CribAndDeviceManager({
                 userRole={userRole}
                 onError={onError}
                 onCribUpdated={() => void loadData()}
+              />
+
+              {/* M7: Alimentación (RF15–RF17, RF37), Canciones (RF12), Móvil y Juguetes (RF13, RF33–RF36) e Historiales/Exportación (RF30–RF32) */}
+              <FeedingToysAndHistoryPanel
+                accessToken={accessToken}
+                cunaId={activeCribSummary.cuna.id}
+                bebeId={activeCribSummary.bebe?.id ?? babies[0]?.id ?? null}
+                activeProfileId={activeProfileId}
+                onError={onError}
               />
 
               {/* RF11: Intercomunicador Push-to-Talk para la cuna seleccionada */}

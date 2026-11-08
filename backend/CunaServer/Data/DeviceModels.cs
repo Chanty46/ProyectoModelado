@@ -183,6 +183,87 @@ public sealed record LiveCribStatusResponse(
     IReadOnlyList<ClaimableDeviceRecord> Dispositivos,
     bool EnVentanaGraciaRetiro);
 
+public sealed record FeedingSessionRecord(
+    Guid Id,
+    Guid BebeId,
+    Guid? PerfilId,
+    decimal MasaInicialG,
+    decimal? MasaFinalG,
+    decimal? MlConsumidos,
+    decimal? TempC,
+    bool AlertaTemperatura,
+    DateTimeOffset Inicio,
+    DateTimeOffset? Fin);
+
+public sealed record StartFeedingSessionRequest(
+    Guid BebeId,
+    decimal MasaInicialG,
+    decimal? TempC,
+    Guid? PerfilId = null);
+
+public sealed record FinishFeedingSessionRequest(
+    decimal MasaFinalG,
+    Guid? PerfilId = null);
+
+public sealed record SleepSessionRecord(
+    Guid Id,
+    Guid BebeId,
+    Guid CunaId,
+    string Tipo,
+    DateTimeOffset Inicio,
+    DateTimeOffset? Fin,
+    decimal? MovimientoPromedio,
+    int Interrupciones);
+
+public sealed record CreateSleepSessionRequest(
+    Guid CunaId,
+    string Tipo,
+    DateTimeOffset Inicio,
+    DateTimeOffset? Fin,
+    decimal? MovimientoPromedio,
+    int Interrupciones = 0,
+    Guid? PerfilId = null);
+
+public sealed record SongCatalogItem(
+    Guid Id,
+    string Codigo,
+    string Nombre,
+    int DuracionSegundos,
+    string NotasJson);
+
+public sealed record PlaySongRequest(
+    string Codigo,
+    string Accion = "play",
+    Guid? PerfilId = null);
+
+public sealed record PlayMobileRequest(
+    string Patron,
+    string Velocidad,
+    int DuracionSegundos,
+    Guid? PerfilId = null);
+
+public sealed record ToysAndPeripheralsStatusResponse(
+    IReadOnlyList<ToyUsageRecord> HistorialUso,
+    int? BateriaJuguetePct,
+    bool AlertaBateriaBajaJuguete,
+    int? BateriaBiberonPct,
+    decimal? UltimaMasaBiberonG,
+    decimal? UltimaTempBiberonC);
+
+public sealed record ExportHistoryRequest(
+    string Formato,
+    DateOnly? Desde = null,
+    DateOnly? Hasta = null,
+    Guid? PerfilId = null);
+
+public sealed record ExportHistoryResponse(
+    string FileName,
+    string ContentType,
+    string ContentBase64,
+    int SleepSessionsCount,
+    int FeedingSessionsCount,
+    long ElapsedMs);
+
 public sealed record ProtocolEnvelope(
     [property: JsonPropertyName("v")] int V,
     [property: JsonPropertyName("t")] string T,

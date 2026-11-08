@@ -73,6 +73,7 @@ builder.Services.AddSingleton<IntercomAudioService>();
 builder.Services.AddSingleton<PairingAndCribService>();
 builder.Services.AddSingleton<TelegramBotService>();
 builder.Services.AddSingleton<CribLiveControlService>();
+builder.Services.AddSingleton<FeedingHistoryAndToysService>();
 builder.Services.AddHostedService<CribWatchdogBackgroundService>();
 builder.Services.AddHostedService<TelegramPollingAndRemindersBackgroundService>();
 if (!string.Equals(builder.Configuration["TCP_SERVER_ENABLED"], "false", StringComparison.OrdinalIgnoreCase))
@@ -93,6 +94,7 @@ app.MapIntercomEndpoints();
 app.MapPairingAndCribEndpoints();
 app.MapCribLiveControlEndpoints();
 app.MapTelegramAndRemindersEndpoints();
+app.MapFeedingHistoryAndToysEndpoints();
 
 await app.RunAsync();
 
