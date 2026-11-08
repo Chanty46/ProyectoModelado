@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, type KeyboardEvent } from "react";
 import { Mic, Volume2 } from "lucide-react";
 import { accountApi, ApiError } from "../lib/api";
 
@@ -17,6 +17,7 @@ function uint8ToBase64(bytes: Uint8Array): string {
 
 /**
  * RF11 / Spike M8: Intercomunicador unidireccional Push-to-Talk (PCM 8-bit 8 kHz <= 65 dBA).
+ * Soporta eventos de ratón, táctiles y teclado (Espacio/Enter) con estado de accesibilidad.
  */
 export function IntercomPushToTalk({ accessToken, cunaId }: IntercomPushToTalkProps) {
   const [transmitting, setTransmitting] = useState(false);
@@ -24,6 +25,7 @@ export function IntercomPushToTalk({ accessToken, cunaId }: IntercomPushToTalkPr
   const seqRef = useRef(0);
 
   async function sendVoiceTestChunk() {
+    if (transmitting) return;
     setTransmitting(true);
     setStatusMsg(null);
     try {
@@ -58,6 +60,13 @@ export function IntercomPushToTalk({ accessToken, cunaId }: IntercomPushToTalkPr
     }
   }
 
+  function handleKeyDown(e: KeyboardEvent<HTMLButtonElement>) {
+    if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      void sendVoiceTestChunk();
+    }
+  }
+
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
       <div className="flex items-center justify-between">
@@ -73,12 +82,22 @@ export function IntercomPushToTalk({ accessToken, cunaId }: IntercomPushToTalkPr
         type="button"
         disabled={transmitting}
         onMouseDown={sendVoiceTestChunk}
-        className="inline-flex items-center gap-2 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+        onTouchStart={(e) => {
+          e.preventDefault();
+          void sendVoiceTestChunk();
+        }}
+        onKeyDown={handleKeyDown}
+        aria-label="Transmitir bloque de voz por intercomunicador push-to-talk"
+        className="inline-flex items-center gap-2 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-1"
       >
-        <Mic className="h-3.5 w-3.5" aria-hidden="true" />
+        <Mic className={`h-3.5 w-3.5 ${transmitting ? "animate-pulse text-amber-300" : ""}`} aria-hidden="true" />
         {transmitting ? "Transmitiendo..." : "Mantener para hablar (Push-to-Talk)"}
       </button>
-      {statusMsg && <p className="text-[11px] text-slate-600">{statusMsg}</p>}
+      {statusMsg && (
+        <p className="text-[11px] text-slate-600" role="status" aria-live="polite">
+          {statusMsg}
+        </p>
+      )}
     </div>
   );
 }

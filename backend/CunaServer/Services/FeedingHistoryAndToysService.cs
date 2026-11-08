@@ -670,7 +670,20 @@ public sealed class FeedingHistoryAndToysService
     }
 
     private static string EscapeCsv(string input)
-        => input.Replace("\"", "\"\"").Replace(",", " ");
+    {
+        if (string.IsNullOrEmpty(input))
+        {
+            return "\"\"";
+        }
+
+        var sanitized = input.Replace("\"", "\"\"").Replace("\r", " ").Replace("\n", " ");
+        if (sanitized.Length > 0 && (sanitized[0] is '=' or '+' or '-' or '@' or '\t'))
+        {
+            sanitized = "'" + sanitized;
+        }
+
+        return $"\"{sanitized}\"";
+    }
 
     private static string EscapePdfText(string input)
         => input.Replace("(", "[").Replace(")", "]").Replace("\\", "/");

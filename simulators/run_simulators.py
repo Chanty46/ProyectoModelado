@@ -139,6 +139,39 @@ class DeviceSimulatorNode:
         await writer.drain()
 
         await self._emit_sample_cycle(reader, writer)
+        if self.once:
+            writer.close()
+            await writer.wait_closed()
+            return
+
+        # Modo continuo (demostración en vivo): mantiene la sesión activa, responde comandos y emite heartbeats
+        last_heartbeat = time.time()
+        last_telemetry = time.time()
+        while True:
+            try:
+                line = await asyncio.wait_for(reader.readline(), timeout=1.0)
+                if not line:
+                    break
+                msg = json.loads(line.decode("utf-8"))
+                if msg.get("t") == "command":
+                    cmd_id = msg.get("d", {}).get("id", "")
+                    ack_line = build_envelope("ack", self.buffer.next_seq(), {"id": cmd_id, "ok": True})
+                    writer.write(ack_line.encode("utf-8"))
+                    await writer.drain()
+            except asyncio.TimeoutError:
+                pass
+
+            now = time.time()
+            if now - last_heartbeat >= 15.0:
+                hb = build_envelope("heartbeat", self.buffer.next_seq(), {"uptime_s": int(now), "battery_pct": 95})
+                writer.write(hb.encode("utf-8"))
+                await writer.drain()
+                last_heartbeat = now
+
+            if now - last_telemetry >= 60.0:
+                await self._emit_sample_cycle(reader, writer)
+                last_telemetry = now
+
         writer.close()
         await writer.wait_closed()
 

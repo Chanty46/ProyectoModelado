@@ -752,8 +752,9 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
 
     public async Task<InvitationRecord?> GetInvitationByHashAsync(string hashCodigo, CancellationToken ct)
     {
+        var encodedHash = Uri.EscapeDataString(hashCodigo);
         var rows = await _http.GetFromJsonAsync<List<InvitationDto>>(
-            $"invitaciones?hash_codigo=eq.{hashCodigo}&select=id,family_id,creado_por,hash_codigo,expira_en,intentos,usada,usada_por,usada_en,creado_en&limit=1",
+            $"invitaciones?hash_codigo=eq.{encodedHash}&select=id,family_id,creado_por,hash_codigo,expira_en,intentos,usada,usada_por,usada_en,creado_en&limit=1",
             JsonOptions,
             ct);
         return rows?.FirstOrDefault()?.ToModel();

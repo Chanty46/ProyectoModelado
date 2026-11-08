@@ -116,10 +116,15 @@ public sealed class CribLiveControlService
     public async Task<ServiceResult<CribRecord>> SetCribModeAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
-        SetCribModeRequest request,
+        SetCribModeRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<CribRecord>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         var (membership, crib, forbidden) = await VerifyFamilyCribMembershipAsync(
             identity,
             cunaId,
@@ -154,10 +159,15 @@ public sealed class CribLiveControlService
     public async Task<ServiceResult<CribRecord>> SetCribLightAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
-        SetCribLightRequest request,
+        SetCribLightRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<CribRecord>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         var (membership, crib, forbidden) = await VerifyFamilyCribMembershipAsync(
             identity,
             cunaId,
@@ -213,10 +223,15 @@ public sealed class CribLiveControlService
     public async Task<ServiceResult<CribConfig>> UpdateCribThresholdsAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
-        UpdateCribThresholdsRequest request,
+        UpdateCribThresholdsRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<CribConfig>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         // RF08 + RF03: Exclusivo del Usuario Principal
         var (membership, crib, forbidden) = await VerifyFamilyCribMembershipAsync(
             identity,
@@ -256,7 +271,7 @@ public sealed class CribLiveControlService
             return ServiceResult<CribConfig>.BadRequest("El piso de ruido de masa debe estar entre 0.000 y 1.000 kg.");
         }
 
-        if (request.EscalaMasa is <= 0m or > 1.0m)
+        if (request.EscalaMasa is < 0.05m or > 1.0m)
         {
             return ServiceResult<CribConfig>.BadRequest("La escala de masa (mass_scale) debe estar entre 0.05 y 1.00 (D14).");
         }

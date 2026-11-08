@@ -413,9 +413,19 @@ public sealed class TelegramBotService
             return;
         }
 
+        if (text.StartsWith("/ayuda", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("/help", StringComparison.OrdinalIgnoreCase))
+        {
+            await _transport.SendMessageAsync(
+                chatId,
+                "Comandos disponibles de Cuna Inteligente:\n• /vincular CODIGO — Vincula tu chat de Telegram con tu cuenta familiar (código temporal de 10 min generado desde la web).\n• /estado — Consulta el estado en vivo de las cunas de tu familia (< 2 s).\n• /ayuda — Muestra esta información de ayuda.",
+                ct);
+            return;
+        }
+
         await _transport.SendMessageAsync(
             chatId,
-            "Comando no reconocido. Comandos disponibles: /vincular CODIGO, /estado",
+            "Comando no reconocido. Comandos disponibles: /vincular CODIGO, /estado, /ayuda",
             ct);
     }
 

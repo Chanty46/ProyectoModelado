@@ -769,6 +769,12 @@ public sealed class DeviceTcpServer : BackgroundService
 
         public void Close()
         {
+            foreach (var kvp in _pendingAcks)
+            {
+                kvp.Value.TrySetResult(false);
+            }
+            _pendingAcks.Clear();
+
             try
             {
                 _client.Close();
