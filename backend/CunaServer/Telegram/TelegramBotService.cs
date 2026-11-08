@@ -100,7 +100,7 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Fallo temporal consultando getUpdates de Telegram.");
+            _logger.LogDebug("Fallo temporal consultando getUpdates de Telegram ({ErrorType}).", ex.GetType().Name);
             return Array.Empty<TelegramInboundMessage>();
         }
     }
@@ -109,17 +109,18 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
     {
         try
         {
+            var sanitizedText = text.Length > 4000 ? text[..4000] + "..." : text;
             var url = $"https://api.telegram.org/bot{_botToken}/sendMessage";
             using var res = await _http.PostAsJsonAsync(url, new
             {
                 chat_id = chatId,
-                text
+                text = sanitizedText
             }, JsonOptions, ct);
             return res.IsSuccessStatusCode;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Fallo enviando mensaje a Telegram (chat_id={ChatId}).", chatId);
+            _logger.LogDebug("Fallo enviando mensaje a Telegram (chat_id={ChatId}, {ErrorType}).", chatId, ex.GetType().Name);
             return false;
         }
     }

@@ -212,9 +212,15 @@ class DeviceClient:
 
 
 async def _sensor_loop(node, wdt):
+    ticks_count = 0
     while True:
         wdt.feed()
         node.tick()
+        ticks_count += 1
+        if ticks_count >= 30:
+            import gc
+            gc.collect()
+            ticks_count = 0
         await asyncio.sleep(node.tick_interval_ms / 1000)
 
 
@@ -229,6 +235,8 @@ async def _network_loop(client, secrets_mod):
             attempt = 0
         except Exception as exc:  # noqa: BLE001 - cualquier fallo de red -> reintento
             print("[cuna] desconectado:", type(exc).__name__)
+            import gc
+            gc.collect()
         await asyncio.sleep(reconnect_backoff_s(attempt))
         attempt += 1
 

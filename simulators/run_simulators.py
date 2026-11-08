@@ -97,83 +97,85 @@ class DeviceSimulatorNode:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        hello_line = build_envelope(
-            "hello",
-            0,
-            {
-                "device_id": self.device_id,
-                "device_type": self.device_type,
-                "fw": "1.0.0-sim",
-                "token": self.token,
-            },
-        )
-        writer.write(hello_line.encode("utf-8"))
-        await writer.drain()
-
-        ack_raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
-        if not ack_raw:
-            raise ConnectionError("Conexión cerrada antes de recibir hello_ack.")
-
-        ack_msg = json.loads(ack_raw.decode("utf-8"))
-        if ack_msg.get("t") != "hello_ack" or not ack_msg.get("d", {}).get("session_ok"):
-            raise PermissionError(f"Fallo de autenticación hello: {ack_msg}")
-
-        cfg = ack_msg.get("d", {}).get("config", {})
-        if "mass_scale" in cfg:
-            self.mattress_engine.mass_scale = float(cfg["mass_scale"])
-
-        # Reenviar búfer offline pendiente en orden
-        for pending in self.buffer.pending_messages():
-            line = json.dumps(pending, separators=(",", ":")) + "\n"
-            writer.write(line.encode("utf-8"))
+        try:
+            hello_line = build_envelope(
+                "hello",
+                0,
+                {
+                    "device_id": self.device_id,
+                    "device_type": self.device_type,
+                    "fw": "1.0.0-sim",
+                    "token": self.token,
+                },
+            )
+            writer.write(hello_line.encode("utf-8"))
             await writer.drain()
-            resp = await asyncio.wait_for(reader.readline(), timeout=5.0)
-            if resp:
-                resp_obj = json.loads(resp.decode("utf-8"))
-                if resp_obj.get("t") == "ack":
-                    self.buffer.ack_up_to(pending["seq"])
 
-        # Enviar heartbeat y una muestra de telemetría/evento según el tipo de dispositivo
-        hb_line = build_envelope("heartbeat", 0, {"uptime_s": 15, "battery_pct": 95})
-        writer.write(hb_line.encode("utf-8"))
-        await writer.drain()
+            ack_raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            if not ack_raw:
+                raise ConnectionError("Conexión cerrada antes de recibir hello_ack.")
 
-        await self._emit_sample_cycle(reader, writer)
-        if self.once:
-            writer.close()
-            await writer.wait_closed()
-            return
+            ack_msg = json.loads(ack_raw.decode("utf-8"))
+            if ack_msg.get("t") != "hello_ack" or not ack_msg.get("d", {}).get("session_ok"):
+                raise PermissionError(f"Fallo de autenticación hello: {ack_msg}")
 
-        # Modo continuo (demostración en vivo): mantiene la sesión activa, responde comandos y emite heartbeats
-        last_heartbeat = time.time()
-        last_telemetry = time.time()
-        while True:
-            try:
-                line = await asyncio.wait_for(reader.readline(), timeout=1.0)
-                if not line:
-                    break
-                msg = json.loads(line.decode("utf-8"))
-                if msg.get("t") == "command":
-                    cmd_id = msg.get("d", {}).get("id", "")
-                    ack_line = build_envelope("ack", self.buffer.next_seq(), {"id": cmd_id, "ok": True})
-                    writer.write(ack_line.encode("utf-8"))
-                    await writer.drain()
-            except asyncio.TimeoutError:
-                pass
+            cfg = ack_msg.get("d", {}).get("config", {})
+            if "mass_scale" in cfg:
+                self.mattress_engine.mass_scale = float(cfg["mass_scale"])
 
-            now = time.time()
-            if now - last_heartbeat >= 15.0:
-                hb = build_envelope("heartbeat", self.buffer.next_seq(), {"uptime_s": int(now), "battery_pct": 95})
-                writer.write(hb.encode("utf-8"))
+            # Reenviar búfer offline pendiente en orden
+            for pending in self.buffer.pending_messages():
+                line = json.dumps(pending, separators=(",", ":")) + "\n"
+                writer.write(line.encode("utf-8"))
                 await writer.drain()
-                last_heartbeat = now
+                resp = await asyncio.wait_for(reader.readline(), timeout=5.0)
+                if resp:
+                    resp_obj = json.loads(resp.decode("utf-8"))
+                    if resp_obj.get("t") == "ack":
+                        self.buffer.ack_up_to(pending["seq"])
 
-            if now - last_telemetry >= 60.0:
-                await self._emit_sample_cycle(reader, writer)
-                last_telemetry = now
+            # Enviar heartbeat y una muestra de telemetría/evento según el tipo de dispositivo
+            hb_line = build_envelope("heartbeat", 0, {"uptime_s": 15, "battery_pct": 95})
+            writer.write(hb_line.encode("utf-8"))
+            await writer.drain()
 
-        writer.close()
-        await writer.wait_closed()
+            await self._emit_sample_cycle(reader, writer)
+            if self.once:
+                return
+
+            # Modo continuo (demostración en vivo): mantiene la sesión activa, responde comandos y emite heartbeats
+            last_heartbeat = time.time()
+            last_telemetry = time.time()
+            while True:
+                try:
+                    line = await asyncio.wait_for(reader.readline(), timeout=1.0)
+                    if not line:
+                        break
+                    msg = json.loads(line.decode("utf-8"))
+                    if msg.get("t") == "command":
+                        cmd_id = msg.get("d", {}).get("id", "")
+                        ack_line = build_envelope("ack", self.buffer.next_seq(), {"id": cmd_id, "ok": True})
+                        writer.write(ack_line.encode("utf-8"))
+                        await writer.drain()
+                except asyncio.TimeoutError:
+                    pass
+
+                now = time.time()
+                if now - last_heartbeat >= 15.0:
+                    hb = build_envelope("heartbeat", self.buffer.next_seq(), {"uptime_s": int(now), "battery_pct": 95})
+                    writer.write(hb.encode("utf-8"))
+                    await writer.drain()
+                    last_heartbeat = now
+
+                if now - last_telemetry >= 60.0:
+                    await self._emit_sample_cycle(reader, writer)
+                    last_telemetry = now
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
 
     async def _emit_sample_cycle(
         self,

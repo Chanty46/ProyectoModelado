@@ -167,6 +167,53 @@ public class FeedingHistoryAndToysTests
         Assert.Contains(caregiverAudit, a => a.Accion == "exportar_historial_rf32" && a.PerfilId == profileId);
     }
 
+    [Fact]
+    public async Task RF32_CsvExport_SanitizesFormulaInjection()
+    {
+        await using var factory = CreateTestFactory(out _, out _, out _);
+        using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        var bootResp = await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia Formulas", "Papá", "P1"));
+        var bootCtx = await bootResp.Content.ReadFromJsonAsync<AccountContextResponse>();
+        var profileId = bootCtx!.Perfiles[0].Id;
+
+        await client.PostAsync("/api/pairing/window", null);
+        var claimCentralResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-central-nuevo",
+            "RECLAMO-CENTRAL-1001",
+            null,
+            "Cuna Seguridad"));
+        var claimedCentral = await claimCentralResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+        var cunaId = claimedCentral!.CunaId;
+
+        var babyResp = await client.PostAsJsonAsync("/api/babies", new UpsertBabyRequest(
+            cunaId,
+            "=cmd|' /C calc'!A0",
+            new DateOnly(2026, 1, 1),
+            "Notas de prueba"));
+        Assert.Equal(HttpStatusCode.Created, babyResp.StatusCode);
+        var baby = await babyResp.Content.ReadFromJsonAsync<BabyRecord>();
+
+        // Crear una sesión de sueño para incluir al bebé en las líneas del CSV
+        var sleepResp = await client.PostAsJsonAsync($"/api/babies/{baby!.Id}/history/sleep", new CreateSleepSessionRequest(
+            cunaId,
+            "siesta",
+            DateTimeOffset.UtcNow.AddMinutes(-30),
+            DateTimeOffset.UtcNow,
+            0.05m,
+            0,
+            profileId));
+        Assert.Equal(HttpStatusCode.Created, sleepResp.StatusCode);
+
+        var exportResp = await client.PostAsJsonAsync($"/api/babies/{baby.Id}/history/export", new ExportHistoryRequest("csv", null, null, profileId));
+        Assert.Equal(HttpStatusCode.OK, exportResp.StatusCode);
+        var export = await exportResp.Content.ReadFromJsonAsync<ExportHistoryResponse>();
+        var csv = Encoding.UTF8.GetString(Convert.FromBase64String(export!.ContentBase64));
+
+        Assert.Contains("bebe=\"'=cmd|' /C calc'!A0\"", csv);
+    }
+
     private sealed class FakeM7JwtValidator : IJwtTokenValidator
     {
         public Task<AuthenticatedIdentity?> ValidateBearerTokenAsync(string? authorizationHeader, CancellationToken ct)
