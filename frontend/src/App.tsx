@@ -19,6 +19,7 @@ import {
   type CreateInvitationResponse,
 } from "./lib/api";
 import { ProfileSelectorBar } from "./components/ProfileSelectorBar";
+import { CribAndDeviceManager } from "./components/CribAndDeviceManager";
 import { AcceptInvitationPage } from "./pages/AcceptInvitationPage";
 
 export default function App() {
@@ -373,6 +374,13 @@ export default function App() {
               profiles={account.perfiles}
               activeProfileId={activeProfileId}
               onSelectProfile={setActiveProfileId}
+            />
+
+            {/* M4: Gestión de Cunas, Emparejamiento Pico W (RF24–RF27), Bebé (RF28) e Intercomunicador (RF11) */}
+            <CribAndDeviceManager
+              accessToken={accessToken}
+              userRole={account.rol}
+              onError={setErrorBanner}
             />
 
             <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
