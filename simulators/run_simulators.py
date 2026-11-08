@@ -11,13 +11,22 @@ import json
 import os
 import time
 from typing import Any, Dict, List
-from protocol_client import (
-    CentralEnvRuleEngine,
-    MattressRuleEngine,
-    OfflineRingBuffer,
-    build_envelope,
-    compute_backoff_seconds,
-)
+try:
+    from simulators.protocol_client import (
+        CentralEnvRuleEngine,
+        MattressRuleEngine,
+        OfflineRingBuffer,
+        build_envelope,
+        compute_backoff_seconds,
+    )
+except ImportError:
+    from protocol_client import (
+        CentralEnvRuleEngine,
+        MattressRuleEngine,
+        OfflineRingBuffer,
+        build_envelope,
+        compute_backoff_seconds,
+    )
 
 
 DEFAULT_SIM_DEVICES: Dict[str, Dict[str, str]] = {

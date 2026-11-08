@@ -12,7 +12,7 @@ Los siguientes puntos requieren las placas físicas **Raspberry Pi Pico W** y se
   3. Verificar que los pulsos de reloj en `PD_SCK` duren `< 50 µs` en alto para no inducir el modo *power-down* del HX711.
 
 ## 2. Confirmación del Sensor Ambiental de la Central (`AHT10/AHT20` vs `DHT22`)
-- **Archivos**: `firmware/common/pins.py` (`CENTRAL_PINS["env_sensor_type"]`), `firmware/common/hal.py` (`TemperatureHumiditySensorAdapter`)
+- **Archivos**: `firmware/common/pins.py` (`CENTRAL_PINS["ENV_SENSOR"]`), `firmware/common/hal.py` (`TemperatureHumiditySensorAdapter`)
 - **Procedimiento físico**:
   1. Si se entrega el módulo I2C **AHT10/AHT20** (dirección `0x38` en `GP4`/`GP5`), usar `"AHT20"` para cumplir holgadamente con `IH-02` (`±0.3 °C`, `±3 % HR`).
   2. Si se utiliza **DHT22** en `GP6`, cambiar `env_sensor_type = "DHT22"`.

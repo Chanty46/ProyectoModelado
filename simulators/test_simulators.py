@@ -1,12 +1,22 @@
 import unittest
-from protocol_client import (
-    CentralAudioPlayer,
-    CentralEnvRuleEngine,
-    MattressRuleEngine,
-    OfflineRingBuffer,
-    build_envelope,
-    compute_backoff_seconds,
-)
+try:
+    from simulators.protocol_client import (
+        CentralAudioPlayer,
+        CentralEnvRuleEngine,
+        MattressRuleEngine,
+        OfflineRingBuffer,
+        build_envelope,
+        compute_backoff_seconds,
+    )
+except ImportError:
+    from protocol_client import (
+        CentralAudioPlayer,
+        CentralEnvRuleEngine,
+        MattressRuleEngine,
+        OfflineRingBuffer,
+        build_envelope,
+        compute_backoff_seconds,
+    )
 
 
 class SimulatorProtocolAndRulesTests(unittest.TestCase):
