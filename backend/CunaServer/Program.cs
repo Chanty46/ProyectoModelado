@@ -55,6 +55,8 @@ builder.Services.AddSingleton<FamilyAccountService>();
 builder.Services.AddSingleton<DeviceTcpServer>();
 builder.Services.AddSingleton<IntercomAudioService>();
 builder.Services.AddSingleton<PairingAndCribService>();
+builder.Services.AddSingleton<CribLiveControlService>();
+builder.Services.AddHostedService<CribWatchdogBackgroundService>();
 if (!string.Equals(builder.Configuration["TCP_SERVER_ENABLED"], "false", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddHostedService(sp => sp.GetRequiredService<DeviceTcpServer>());
@@ -62,12 +64,16 @@ if (!string.Equals(builder.Configuration["TCP_SERVER_ENABLED"], "false", StringC
 
 var app = builder.Build();
 
+// Asegurar que el interceptor de eventos TCP de CribLiveControlService quede registrado al iniciar
+_ = app.Services.GetRequiredService<CribLiveControlService>();
+
 app.UseCors("WebFrontend");
 
 app.MapHealthEndpoints();
 app.MapAccountAndFamilyEndpoints();
 app.MapIntercomEndpoints();
 app.MapPairingAndCribEndpoints();
+app.MapCribLiveControlEndpoints();
 
 await app.RunAsync();
 

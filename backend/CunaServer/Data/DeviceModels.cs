@@ -146,6 +146,43 @@ public sealed record ToyUsageRecord(
     string? Patron,
     string? Velocidad);
 
+public sealed record CaregiverAuditLogEntry(
+    Guid FamilyId,
+    Guid? UsuarioId,
+    Guid? PerfilId,
+    string Accion,
+    string? DetalleJson,
+    DateTimeOffset Ts);
+
+public sealed record SetCribModeRequest(
+    string Modo,
+    Guid? PerfilId = null);
+
+public sealed record SetCribLightRequest(
+    bool Encendida,
+    int Nivel,
+    Guid? PerfilId = null);
+
+public sealed record UpdateCribThresholdsRequest(
+    decimal TempMin,
+    decimal TempMax,
+    decimal HumMin,
+    decimal HumMax,
+    decimal MovimientoUmbral,
+    bool MovimientoAlertaActiva,
+    decimal RuidoMasaPiso,
+    decimal EscalaMasa,
+    Guid? PerfilId = null);
+
+public sealed record LiveCribStatusResponse(
+    CribRecord Cuna,
+    CribConfig Umbrales,
+    TelemetryRecord? UltimaTelemetria,
+    IReadOnlyList<TelemetryRecord> TelemetriaReciente,
+    IReadOnlyList<EventAlertRecord> AlertasRecientes,
+    IReadOnlyList<ClaimableDeviceRecord> Dispositivos,
+    bool EnVentanaGraciaRetiro);
+
 public sealed record ProtocolEnvelope(
     [property: JsonPropertyName("v")] int V,
     [property: JsonPropertyName("t")] string T,
