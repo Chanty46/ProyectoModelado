@@ -1,131 +1,136 @@
 """
-Firmware MicroPython para Juguete Cognitivo de 5 Botones (`juguete`) — Hito M9.
+Juguete Cognitivo de 5 Botones (Pico W #5) — MicroPython.
 
-Responsabilidades:
-- RF14 / RF34 / RF35: Secuencia interactiva de 5 LEDs + 5 pulsadores + buzzer pasivo.
-  Respuesta audiovisual en `< 200 ms` (RF34), reinicio automático del patrón al fallar un botón (RF35),
-  y envío de `event: game_end` con `hits` y `secs` al concluir la partida (RF14).
-- RF36: Monitoreo de batería (3 pilas AA por divisor ADC) y disparo de `event: battery_low` cuando `< 20 %`.
+RF34  Mecánica de juego: un LED iluminado a la vez. Cuando el infante pulsa el botón
+      iluminado, reproduce tono de acierto, apaga ese LED, ilumina uno nuevo al azar
+      en < 200 ms e incrementa contador de aciertos.
+RF35  Reinicio por fallo: si pulsa un botón cuyo LED está apagado, reproduce tono
+      de error, finaliza la secuencia transmitiendo `game_end` (RF14) con `hits` y `secs`,
+      reinicia aciertos a 0 e ilumina un nuevo botón en < 1.0 s.
+RF36  Batería baja: aviso por TCP con `battery_low` cuando el nivel desciende por debajo de 10 %.
+Telemetría por minuto: `battery_pct`.
 """
 
-from typing import Any
-
-from firmware.common.hal import (
+from common.device_runtime import DeviceNode, run
+from common.hal import (
+    IS_MICROPYTHON,
     BatteryAdcAdapter,
     DigitalPinAdapter,
     PwmOutputAdapter,
-    WatchdogAdapter,
     ticks_diff,
     ticks_ms,
 )
-from firmware.common.pins import JUGUETE_PINS
-from firmware.common.protocol_and_buffer import OfflineCircularBuffer48h
+from common.pins import JUGUETE_PINS
 
-BUTTON_NOTES_HZ = [262, 330, 392, 523, 659]  # Do4, Mi4, Sol4, Do5, Mi5
-LOW_BATTERY_THRESHOLD_PCT = 20
+LOW_BATTERY_THRESHOLD = 10  # < 10 % según RF36
+NOTES_HIT = [262, 330, 392, 523, 659]  # Do4, Mi4, Sol4, Do5, Mi5
+NOTE_ERROR = 150  # Tono grave distintivo de error
 
 
-class JugueteFirmwareNode:
-    """Controlador principal del nodo `juguete` en Raspberry Pi Pico W."""
+class JugueteNode(DeviceNode):
+    device_type = "juguete"
+    tick_interval_ms = 25  # Alta reactividad para pulsadores (< 200 ms RF34)
 
-    def __init__(self, serial: str = "juguete-pico-01") -> None:
-        self.serial = serial
-        self.device_type = "juguete"
-        self.buffer = OfflineCircularBuffer48h()
-        self.wdt = WatchdogAdapter(timeout_ms=JUGUETE_PINS["wdt_timeout_ms"])
+    def __init__(self, buffer=None, clock=None):
+        DeviceNode.__init__(self, buffer, clock)
+        p = JUGUETE_PINS
+        self.buttons = [DigitalPinAdapter(pin, is_output=False, pull_up=True) for pin in p["BUTTON_PINS"]]
+        self.leds = [DigitalPinAdapter(pin, is_output=True) for pin in p["LED_PINS"]]
+        self.buzzer = PwmOutputAdapter(p["BUZZER_PWM"], 440)
+        self.battery_adc = BatteryAdcAdapter(p["BATTERY_ADC"])
 
-        self.buttons = [
-            DigitalPinAdapter(pin, is_output=False, pull_up=True)
-            for pin in JUGUETE_PINS["button_pins"]
-        ]
-        self.leds = [
-            DigitalPinAdapter(pin, is_output=True)
-            for pin in JUGUETE_PINS["led_pins"]
-        ]
-        self.buzzer = PwmOutputAdapter(
-            gpio_pin=JUGUETE_PINS["buzzer_pwm_pin"],
-            freq_hz=440,
-            initial_duty_u16=0,
-        )
-        self.battery_adc = BatteryAdcAdapter(adc_pin=JUGUETE_PINS["battery_adc_pin"])
-
-        # Patrón cognitivo determinista de 5 botones (0..4)
-        self.target_sequence: list[int] = [0, 2, 1, 4, 3]
-        self.current_step = 0
+        self.current_target = 0
         self.hits = 0
+        self.game_active = True
         self.resets_count = 0
-        self.last_response_latency_ms = 0
+        self._last_btn_states = [1] * len(self.buttons)  # Pull-up: 1 = suelto, 0 = presionado
+        self._session_start_ms = ticks_ms()
+        self._sound_until_ms = 0
         self._low_battery_alerted = False
+        self._minute_start_ms = None
 
-    def press_button(self, button_index: int) -> tuple[bool, int]:
+        self._activate_target(0)
+
+    def heartbeat_data(self):
+        data = DeviceNode.heartbeat_data(self)
+        data["battery_pct"] = self.battery_adc.read_battery_pct()
+        return data
+
+    def _activate_target(self, idx):
+        self.current_target = idx % len(self.leds)
+        for i, led in enumerate(self.leds):
+            led.write(1 if i == self.current_target else 0)
+
+    def _next_random_target(self):
+        # Generador determinista simple sin depender de módulo urandom
+        curr = self.current_target
+        # Selecciona un botón distinto
+        return (curr + 1 + (ticks_ms() % (len(self.leds) - 1))) % len(self.leds)
+
+    def _play_tone(self, freq, duration_ms, now_ms):
+        self.buzzer.set_freq(freq)
+        self.buzzer.set_duty_u16(16384)
+        self._sound_until_ms = now_ms + duration_ms
+
+    def _handle_press(self, btn_idx, now_ms):
         """
-        Procesa la pulsación de uno de los 5 botones (0..4) con respuesta audiovisual inmediata (< 200 ms, RF34).
-        Si coincide con el paso esperado de la secuencia, incrementa `hits`.
-        Si falla, emite tono de error y reinicia la secuencia al paso 0 (RF35).
-        Devuelve `(fue_acierto, latencia_ms)`.
+        Procesa pulsación física de un botón.
+        Devuelve (is_hit, latency_ms).
         """
-        start_ms = ticks_ms()
-        self.wdt.feed()
-
-        if button_index < 0 or button_index >= len(self.leds):
-            raise ValueError("Índice de botón fuera de rango (0..4).")
-
-        expected_btn = self.target_sequence[self.current_step % len(self.target_sequence)]
-        for idx, led in enumerate(self.leds):
-            led.write(1 if idx == button_index else 0)
-
-        if button_index == expected_btn:
-            # Retroalimentación inmediata de acierto
-            self.buzzer.set_freq(BUTTON_NOTES_HZ[button_index])
-            self.buzzer.set_duty_u16(16384)
+        t0 = ticks_ms()
+        if btn_idx == self.current_target:
+            # Acierto (RF34)
             self.hits += 1
-            self.current_step += 1
-            is_hit = True
+            self._play_tone(NOTES_HIT[btn_idx], 120, now_ms)
+            nxt = self._next_random_target()
+            self._activate_target(nxt)
+            latency = ticks_diff(ticks_ms(), t0)
+            return True, max(1, latency)
         else:
-            # Tono grave y reinicio inmediato del patrón tras error (RF35)
-            self.buzzer.set_freq(150)
-            self.buzzer.set_duty_u16(16384)
-            self.current_step = 0
+            # Fallo (RF35): sonido de error, reportar fin de secuencia (RF14) y reiniciar
+            self._play_tone(NOTE_ERROR, 250, now_ms)
+            elapsed_s = max(1, ticks_diff(now_ms, self._session_start_ms) // 1000)
+            self.emit_event("game_end", hits=self.hits, secs=elapsed_s)
+            self.hits = 0
             self.resets_count += 1
-            is_hit = False
+            self._session_start_ms = now_ms
+            nxt = self._next_random_target()
+            self._activate_target(nxt)
+            latency = ticks_diff(ticks_ms(), t0)
+            return False, max(1, latency)
 
-        elapsed_ms = max(1, ticks_diff(ticks_ms(), start_ms))
-        self.last_response_latency_ms = elapsed_ms
-        return is_hit, elapsed_ms
+    def tick(self, now_ms=None):
+        now_ms = ticks_ms() if now_ms is None else now_ms
+        if self._minute_start_ms is None:
+            self._minute_start_ms = now_ms
 
-    def finish_game_session(self, duration_secs: int, ts: int) -> dict[str, Any]:
-        """Emite `event: game_end` con `hits`, `secs` y `battery_pct` al finalizar la partida (RF14)."""
-        self.wdt.feed()
-        for led in self.leds:
-            led.write(0)
-        self.buzzer.set_duty_u16(0)
+        # Apagar buzzer si terminó el tono
+        if self._sound_until_ms > 0 and ticks_diff(now_ms, self._sound_until_ms) >= 0:
+            self.buzzer.set_duty_u16(0)
+            self._sound_until_ms = 0
 
-        completed_hits = self.hits
-        self.hits = 0
-        self.current_step = 0
+        # Sondeo de pulsadores con detección de flanco descendente (0 = pulsado con PULL_UP)
+        for i, btn in enumerate(self.buttons):
+            v = btn.read()
+            if v == 0 and self._last_btn_states[i] == 1:
+                self._handle_press(i, now_ms)
+            self._last_btn_states[i] = v
 
-        return self.buffer.enqueue_envelope(
-            "event",
-            {
-                "name": "game_end",
-                "hits": completed_hits,
-                "secs": max(1, int(duration_secs)),
-                "battery_pct": self.battery_adc.read_battery_pct(),
-            },
-            ts=ts,
-        )
-
-    def check_battery(self, ts: int) -> dict[str, Any] | None:
-        """Verifica nivel de batería y emite `event: battery_low` si cae por debajo del 20 % (RF36)."""
-        self.wdt.feed()
+        # Verificación de batería baja < 10 % (RF36)
         pct = self.battery_adc.read_battery_pct()
-        if pct < LOW_BATTERY_THRESHOLD_PCT and not self._low_battery_alerted:
+        if pct < LOW_BATTERY_THRESHOLD and not self._low_battery_alerted:
             self._low_battery_alerted = True
-            return self.buffer.enqueue_envelope(
-                "event",
-                {"name": "battery_low", "battery_pct": pct},
-                ts=ts,
-            )
-        if pct >= LOW_BATTERY_THRESHOLD_PCT:
+            self.emit_event("battery_low", battery_pct=pct)
+        elif pct >= LOW_BATTERY_THRESHOLD:
             self._low_battery_alerted = False
-        return None
+
+        # Telemetría cada 60 s
+        if ticks_diff(now_ms, self._minute_start_ms) >= 60000:
+            self._minute_start_ms = now_ms
+            self.emit_telemetry({"battery_pct": pct})
+
+
+if IS_MICROPYTHON:
+    import secrets  # type: ignore  # noqa: E402
+
+    run(JugueteNode(), secrets)

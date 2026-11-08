@@ -1,253 +1,348 @@
 """
-Firmware MicroPython para Nodo Central de la Cuna Inteligente (`central`) — Hito M9.
+Unidad Central (Pico W #1) — MicroPython.
 
-Responsabilidades:
-- RF07 / RF08: Lectura ambiental T/H y disparo de `env_out_of_range` tras 10 s sostenidos fuera de rango.
-- RF09: Lámpara nocturna con PWM >= 1 kHz y rampa suave de 1.5 s (0..100 %).
-- RF11 / D5: Reproducción de bloques de audio PCM 8-bit 8 kHz (base64) por PWM + PAM8403.
-- RF12 / D12: Reproducción de melodías de cuna como secuencia de notas `[(freq_hz, ms), ...]` con volumen <= 65 dBA.
-- RF05 / IU-03: Pulsador táctil `TTP223` que emite `button_attention` y LED RGB de estado (`green`/`yellow`/`red`).
-- RF04: Alarma local sonora y visual (`alarm_set`).
+RF07/RF08  T/H fuera de rango >= 10 s sostenidos -> event `env_out_of_range` (una vez por episodio).
+RF09       Luz nocturna PWM >= 1 kHz con rampa no bloqueante (por defecto 1.5 s).
+RF05       Botón táctil TTP223 -> event `button_attention`.
+IU-03      LED RGB según `status_led` / `mode_set` (verde monitoreo, amarillo atención, rojo alarma).
+RF04       `alarm_set` -> tono de alarma local (prioridad sobre todo lo demás).
+RF12/D12   `song_play` -> secuencia de notas [{freq_hz, ms}] enviada por el servidor.
+RF11/D5    `audio_chunk` -> PCM u8 reproducido por PWM con un temporizador a `rate` Hz.
+Telemetría por minuto: `temp_c`, `hum_pct` (promedios).
+
+En la Pico: copiar `common/`, este archivo como `main.py` y `secrets.py` a la raíz.
 """
 
-import base64
-from typing import Any
-
-from firmware.common.hal import (
+from common.device_runtime import DeviceNode, run
+from common.hal import (
+    IS_MICROPYTHON,
     DigitalPinAdapter,
     PwmOutputAdapter,
     TemperatureHumiditySensorAdapter,
-    WatchdogAdapter,
+    b64decode,
+    ticks_diff,
+    ticks_ms,
 )
-from firmware.common.pins import CENTRAL_PINS
-from firmware.common.protocol_and_buffer import OfflineCircularBuffer48h
+from common.pins import CENTRAL_PINS
 
-# Catálogo de melodías embebido como secuencias de notas (freq_hz, duracion_ms) según D12
-EMBEDDED_SONG_NOTES: dict[int, list[tuple[int, int]]] = {
-    1: [(262, 400), (330, 400), (392, 800), (330, 400), (262, 800)],  # Arrullo de Estrellas (Brahms)
-    2: [(262, 350), (262, 350), (392, 350), (392, 350), (440, 350), (440, 350), (392, 700)],  # Estrellita
-    3: [(294, 500), (330, 500), (370, 500), (440, 1000)],  # Ruido Blanco Suave / Arpegio
-    4: [(330, 450), (294, 450), (262, 900)],  # Melodía Nocturna del Bosque
+ENV_SUSTAIN_MS = 10000
+TOUCH_DEBOUNCE_MS = 300
+# TODO-HW: ajustar con sonómetro + potenciómetro del PAM8403 para no superar 65 dBA (RNF08)
+MAX_TONE_DUTY = 16384
+ALARM_TONES = ((880, 400), (660, 400))
+MODE_COLORS = {"monitoreo": "green", "atencion": "yellow", "alarma": "red"}
+RGB_MAP = {
+    "green": (0, 1, 0),
+    "yellow": (1, 1, 0),
+    "red": (1, 0, 0),
+    "blue": (0, 0, 1),
+    "off": (0, 0, 0),
 }
+MAX_AUDIO_QUEUE_BYTES = 8 * 1280  # ~1.3 s a 8 kHz; lo demás se descarta para no agotar la RAM
 
 
-class CentralFirmwareNode:
-    """Controlador principal del nodo `central` en Raspberry Pi Pico W."""
+class IntercomAudioPlayer:
+    """
+    Reproduce PCM u8 escribiendo cada muestra en el duty del PWM desde un temporizador.
+    TODO-HW: verificar en la Pico que el callback a 8 kHz no pierda muestras.
+    """
 
-    def __init__(self, serial: str = "central-pico-01") -> None:
-        self.serial = serial
-        self.device_type = "central"
-        self.buffer = OfflineCircularBuffer48h()
-        self.wdt = WatchdogAdapter(timeout_ms=CENTRAL_PINS["wdt_timeout_ms"])
+    def __init__(self, pwm, carrier_hz):
+        self.pwm = pwm
+        self.carrier_hz = carrier_hz
+        self._queue = bytearray()
+        self._pos = 0
+        self._timer = None
+        self.samples_received = 0
 
-        # Sensores y actuadores a través del HAL usando firmware/common/pins.py
+    @property
+    def active(self):
+        return self._pos < len(self._queue)
+
+    def enqueue(self, pcm, rate_hz):
+        if len(self._queue) - self._pos + len(pcm) > MAX_AUDIO_QUEUE_BYTES:
+            return False
+        if self._pos and self._pos >= len(self._queue):
+            self._queue = bytearray()
+            self._pos = 0
+        self._queue.extend(pcm)
+        self.samples_received += len(pcm)
+        if IS_MICROPYTHON and self._timer is None:
+            import machine  # type: ignore
+
+            self.pwm.set_freq(self.carrier_hz)
+            self._timer = machine.Timer(freq=int(rate_hz), mode=machine.Timer.PERIODIC, callback=self._on_sample)
+        return True
+
+    def _on_sample(self, _timer):
+        if self._pos < len(self._queue):
+            self.pwm.set_duty_u16(self._queue[self._pos] << 8)
+            self._pos += 1
+        else:
+            self.stop()
+
+    def stop(self):
+        if self._timer is not None:
+            self._timer.deinit()
+            self._timer = None
+        self._queue = bytearray()
+        self._pos = 0
+        self.pwm.set_duty_u16(0)
+
+
+class CentralNode(DeviceNode):
+    device_type = "central"
+    tick_interval_ms = 50
+
+    def __init__(self, buffer=None, clock=None):
+        DeviceNode.__init__(self, buffer, clock)
+        p = CENTRAL_PINS
         self.env_sensor = TemperatureHumiditySensorAdapter(
-            sensor_type=CENTRAL_PINS["env_sensor_type"],
-            sda_pin=CENTRAL_PINS["i2c_sda_pin"],
-            scl_pin=CENTRAL_PINS["i2c_scl_pin"],
-            dht_pin=CENTRAL_PINS["dht22_data_pin"],
+            p["ENV_SENSOR"], p["I2C_ID"], p["I2C_SDA"], p["I2C_SCL"], p["DHT_FALLBACK"]
         )
-        self.lamp_pwm = PwmOutputAdapter(
-            gpio_pin=CENTRAL_PINS["night_lamp_pwm_pin"],
-            freq_hz=max(1000, int(CENTRAL_PINS["night_lamp_pwm_freq_hz"])),
-            initial_duty_u16=0,
+        self.lamp_pwm = PwmOutputAdapter(p["LAMP_PWM"], max(1000, p["LAMP_PWM_HZ"]))
+        self.audio_pwm = PwmOutputAdapter(p["AUDIO_PWM"], p["AUDIO_CARRIER_HZ"])
+        self.touch_pin = DigitalPinAdapter(p["TOUCH_TTP223"], is_output=False)
+        self.rgb = (
+            DigitalPinAdapter(p["RGB_RED"]),
+            DigitalPinAdapter(p["RGB_GREEN"]),
+            DigitalPinAdapter(p["RGB_BLUE"]),
         )
-        self.audio_pwm = PwmOutputAdapter(
-            gpio_pin=CENTRAL_PINS["audio_pwm_pin"],
-            freq_hz=int(CENTRAL_PINS["audio_carrier_freq_hz"]),
-            initial_duty_u16=0,
-        )
-        self.touch_pin = DigitalPinAdapter(
-            gpio_pin=CENTRAL_PINS["touch_attention_pin"],
-            is_output=False,
-            pull_up=False,
-        )
-        self.led_r = DigitalPinAdapter(CENTRAL_PINS["rgb_red_pin"], is_output=True)
-        self.led_g = DigitalPinAdapter(CENTRAL_PINS["rgb_green_pin"], is_output=True)
-        self.led_b = DigitalPinAdapter(CENTRAL_PINS["rgb_blue_pin"], is_output=True)
+        self.intercom = IntercomAudioPlayer(self.audio_pwm, p["AUDIO_CARRIER_HZ"])
 
-        # Configuración recibida en hello_ack / thresholds_set
-        self.temp_min = 18.0
-        self.temp_max = 26.0
-        self.hum_min = 40.0
-        self.hum_max = 60.0
-
-        # Estado interno
-        self.lamp_intensity_pct = 0
+        self.temp_min, self.temp_max = 18.0, 26.0
+        self.hum_min, self.hum_max = 40.0, 60.0
+        self.mode = "monitoreo"
         self.led_color = "green"
         self.alarm_active = False
-        self.playing_song_id: int | None = None
-        self.last_pcm_samples_played = 0
-        self._out_of_range_seconds = 0.0
-        self._temp_samples: list[float] = []
-        self._hum_samples: list[float] = []
-        self._last_touch_state = 0
 
-        self._apply_rgb_color("green")
+        # Rampa de la luz
+        self.lamp_level = 0.0
+        self._ramp_from = 0.0
+        self._ramp_to = 0.0
+        self._ramp_start_ms = 0
+        self._ramp_ms = 0
 
-    def _apply_rgb_color(self, color: str) -> None:
+        # Canción
+        self.song_notes = []
+        self.song_code = None
+        self._song_idx = 0
+        self._note_start_ms = 0
+        self._song_end_ms = None
+
+        self._alarm_idx = 0
+        self._alarm_tone_ms = 0
+
+        self._out_of_range_since = None
+        self._env_alerted = False
+        self._last_env_ms = None
+        self._minute_start_ms = None
+        self._temps = []
+        self._hums = []
+        self._last_touch = 0
+        self._last_touch_ms = None
+
+        self.set_led("green")
+
+    # ---------- actuadores ----------
+    def set_led(self, color):
+        bits = RGB_MAP.get(color)
+        if bits is None:
+            return False
         self.led_color = color
-        if color == "red":
-            self.led_r.write(1)
-            self.led_g.write(0)
-            self.led_b.write(0)
-        elif color == "yellow":
-            self.led_r.write(1)
-            self.led_g.write(1)
-            self.led_b.write(0)
+        for pin, bit in zip(self.rgb, bits):
+            pin.write(bit)
+        return True
+
+    def start_lamp_ramp(self, target_level, ramp_ms, now_ms):
+        self._ramp_from = self.lamp_level
+        self._ramp_to = float(max(0, min(100, target_level)))
+        self._ramp_start_ms = now_ms
+        self._ramp_ms = max(0, int(ramp_ms))
+        if self._ramp_ms == 0:
+            self._apply_lamp(self._ramp_to)
+
+    def _apply_lamp(self, level):
+        self.lamp_level = level
+        self.lamp_pwm.set_duty_u16(int(level * 65535 / 100))
+
+    def _update_lamp(self, now_ms):
+        if self.lamp_level == self._ramp_to:
+            return
+        elapsed = ticks_diff(now_ms, self._ramp_start_ms)
+        if elapsed >= self._ramp_ms:
+            self._apply_lamp(self._ramp_to)
         else:
-            self.led_r.write(0)
-            self.led_g.write(1)
-            self.led_b.write(0)
+            frac = elapsed / self._ramp_ms
+            self._apply_lamp(self._ramp_from + (self._ramp_to - self._ramp_from) * frac)
 
-    def sample_environment_second(self, ts: int, dt_s: float = 1.0) -> dict[str, Any] | None:
-        """
-        Muestrea temperatura y humedad una vez por segundo.
-        Si permanece fuera de rango durante >= 10 s sostenidos (RF07/RF08), encola `env_out_of_range`.
-        """
-        self.wdt.feed()
-        temp_c, hum_pct = self.env_sensor.read()
-        self._temp_samples.append(temp_c)
-        self._hum_samples.append(hum_pct)
+    def _tone(self, freq_hz, duty):
+        self.audio_pwm.set_freq(freq_hz)
+        self.audio_pwm.set_duty_u16(duty)
 
-        out_temp = temp_c < self.temp_min or temp_c > self.temp_max
-        out_hum = hum_pct < self.hum_min or hum_pct > self.hum_max
+    def _update_audio(self, now_ms):
+        # Prioridad: alarma > intercomunicador > canción
+        if self.alarm_active:
+            freq, dur = ALARM_TONES[self._alarm_idx]
+            if ticks_diff(now_ms, self._alarm_tone_ms) >= dur:
+                self._alarm_idx = (self._alarm_idx + 1) % len(ALARM_TONES)
+                self._alarm_tone_ms = now_ms
+                freq = ALARM_TONES[self._alarm_idx][0]
+            self._tone(freq, MAX_TONE_DUTY)
+            return
+        if self.intercom.active:
+            return
+        if not self.song_notes:
+            return
+        if self._song_end_ms is not None and ticks_diff(now_ms, self._song_end_ms) >= 0:
+            self.stop_song()
+            return
+        note = self.song_notes[self._song_idx]
+        if ticks_diff(now_ms, self._note_start_ms) >= note[1]:
+            self._song_idx += 1
+            if self._song_idx >= len(self.song_notes):
+                if self._song_end_ms is None:  # sin duración: una sola vez
+                    self.stop_song()
+                    return
+                self._song_idx = 0
+            self._note_start_ms = now_ms
+            note = self.song_notes[self._song_idx]
+        self._tone(note[0], MAX_TONE_DUTY // 2 if note[0] > 0 else 0)
 
-        if out_temp or out_hum:
-            self._out_of_range_seconds += dt_s
-            if self._out_of_range_seconds >= 10.0:
-                self._out_of_range_seconds = 0.0
-                kind = "temp_high" if temp_c > self.temp_max else ("temp_low" if temp_c < self.temp_min else "humidity")
-                return self.buffer.enqueue_envelope(
-                    "event",
-                    {"name": "env_out_of_range", "temp_c": temp_c, "hum_pct": hum_pct, "kind": kind},
-                    ts=ts,
-                )
-        else:
-            self._out_of_range_seconds = 0.0
+    def stop_song(self):
+        self.song_notes = []
+        self.song_code = None
+        self.audio_pwm.set_duty_u16(0)
 
-        return None
+    # ---------- sensores ----------
+    def _sample_env(self, now_ms):
+        reading = self.env_sensor.read()
+        if reading is None:
+            return
+        temp, hum = reading
+        self._temps.append(temp)
+        self._hums.append(hum)
+        out = temp < self.temp_min or temp > self.temp_max or hum < self.hum_min or hum > self.hum_max
+        if not out:
+            self._out_of_range_since = None
+            self._env_alerted = False
+            return
+        if self._out_of_range_since is None:
+            self._out_of_range_since = now_ms
+        if not self._env_alerted and ticks_diff(now_ms, self._out_of_range_since) >= ENV_SUSTAIN_MS:
+            self._env_alerted = True
+            if temp > self.temp_max:
+                cause = "temp_high"
+            elif temp < self.temp_min:
+                cause = "temp_low"
+            else:
+                cause = "hum_high" if hum > self.hum_max else "hum_low"
+            self.emit_event("env_out_of_range", temp_c=temp, hum_pct=hum, cause=cause)
 
-    def flush_minute_telemetry(self, ts: int) -> dict[str, Any]:
-        """Agrega las muestras del minuto y encola el sobre `telemetry` en el búfer circular de 48 h."""
-        if not self._temp_samples:
-            t_now, h_now = self.env_sensor.read()
-            self._temp_samples.append(t_now)
-            self._hum_samples.append(h_now)
+    def _flush_minute(self):
+        if not self._temps:
+            return
+        self.emit_telemetry({
+            "temp_c": round(sum(self._temps) / len(self._temps), 2),
+            "hum_pct": round(sum(self._hums) / len(self._hums), 2),
+        })
+        self._temps = []
+        self._hums = []
 
-        temp_avg = round(sum(self._temp_samples) / len(self._temp_samples), 2)
-        temp_min = round(min(self._temp_samples), 2)
-        temp_max = round(max(self._temp_samples), 2)
-        hum_avg = round(sum(self._hum_samples) / len(self._hum_samples), 2)
+    def _poll_touch(self, now_ms):
+        value = self.touch_pin.read()
+        if value and not self._last_touch:
+            if self._last_touch_ms is None or ticks_diff(now_ms, self._last_touch_ms) >= TOUCH_DEBOUNCE_MS:
+                self._last_touch_ms = now_ms
+                self.emit_event("button_attention")
+        self._last_touch = value
 
-        self._temp_samples.clear()
-        self._hum_samples.clear()
+    def tick(self, now_ms=None):
+        now_ms = ticks_ms() if now_ms is None else now_ms
+        if self._minute_start_ms is None:
+            self._minute_start_ms = now_ms
+        self._poll_touch(now_ms)
+        self._update_lamp(now_ms)
+        self._update_audio(now_ms)
+        if self._last_env_ms is None or ticks_diff(now_ms, self._last_env_ms) >= 1000:
+            self._last_env_ms = now_ms
+            self._sample_env(now_ms)
+        if ticks_diff(now_ms, self._minute_start_ms) >= 60000:
+            self._minute_start_ms = now_ms
+            self._flush_minute()
 
-        return self.buffer.enqueue_envelope(
-            "telemetry",
-            {
-                "temp_avg": temp_avg,
-                "temp_min": temp_min,
-                "temp_max": temp_max,
-                "hum_avg": hum_avg,
-                "lamp_on": self.lamp_intensity_pct > 0,
-                "lamp_intensity_pct": self.lamp_intensity_pct,
-                "song_playing": self.playing_song_id is not None,
-            },
-            ts=ts,
-        )
+    # ---------- configuración y comandos ----------
+    def apply_config(self, config):
+        self.temp_min = float(config.get("temp_min", self.temp_min))
+        self.temp_max = float(config.get("temp_max", self.temp_max))
+        self.hum_min = float(config.get("hum_min", self.hum_min))
+        self.hum_max = float(config.get("hum_max", self.hum_max))
 
-    def poll_touch_button(self, ts: int) -> dict[str, Any] | None:
-        """Detecta flanco ascendente en el sensor táctil TTP223 y emite `button_attention` (RF05)."""
-        current = self.touch_pin.read()
-        if current == 1 and self._last_touch_state == 0:
-            self._last_touch_state = 1
-            return self.buffer.enqueue_envelope("event", {"name": "button_attention"}, ts=ts)
-        self._last_touch_state = current
-        return None
-
-    def ramp_lamp_intensity(self, target_pct: int, ramp_steps: int = 15) -> list[int]:
-        """
-        Aplica una rampa suave de 1.5 s (15 pasos de 100 ms) con PWM >= 1 kHz (RF09).
-        Devuelve la lista de valores `duty_u16` intermedios aplicados.
-        """
-        target = max(0, min(100, int(target_pct)))
-        start = self.lamp_intensity_pct
-        steps = max(1, int(ramp_steps))
-        applied_duties: list[int] = []
-
-        for step in range(1, steps + 1):
-            fraction = step / float(steps)
-            interp_pct = start + (target - start) * fraction
-            duty_u16 = int(round((interp_pct / 100.0) * 65535))
-            self.lamp_pwm.set_duty_u16(duty_u16)
-            applied_duties.append(self.lamp_pwm.duty_u16)
-
-        self.lamp_intensity_pct = target
-        return applied_duties
-
-    def handle_command(self, envelope: dict[str, Any], ts: int) -> dict[str, Any]:
-        """Procesa un comando del servidor TCP y devuelve el sobre `ack` correspondiente."""
-        self.wdt.feed()
-        cmd_seq = int(envelope.get("seq", 0))
-        data = envelope.get("d", {})
-        cmd_name = data.get("cmd", "")
-
-        if cmd_name == "lamp_set":
-            on = bool(data.get("on", False))
-            pct = int(data.get("intensity_pct", 0)) if on else 0
-            self.ramp_lamp_intensity(pct)
-        elif cmd_name == "led_status":
-            color = str(data.get("color", "green"))
-            self._apply_rgb_color(color)
-        elif cmd_name == "alarm_set":
-            self.alarm_active = bool(data.get("on", False))
+    def handle_command(self, cmd, params, now_ms=None):
+        now_ms = ticks_ms() if now_ms is None else now_ms
+        if cmd == "light_set":
+            level = int(params.get("level", 50)) if params.get("on") else 0
+            if level < 0 or level > 100:
+                return False, "level_fuera_de_rango"
+            self.start_lamp_ramp(level, int(params.get("ramp_ms", 1500)), now_ms)
+        elif cmd == "status_led":
+            if not self.set_led(str(params.get("color", ""))):
+                return False, "color_invalido"
+        elif cmd == "mode_set":
+            mode = str(params.get("mode", ""))
+            if mode not in MODE_COLORS:
+                return False, "modo_invalido"
+            self.mode = mode
+            self.set_led(MODE_COLORS[mode])
+        elif cmd == "alarm_set":
+            self.alarm_active = bool(params.get("on"))
             if self.alarm_active:
-                self._apply_rgb_color("red")
-                # TODO-HW: Verificar límite acústico <= 65 dBA en bocina 8 ohm con sonómetro (RNF08)
-                self.audio_pwm.set_freq(880)
-                self.audio_pwm.set_duty_u16(20000)
+                self.intercom.stop()
+                self._alarm_idx = 0
+                self._alarm_tone_ms = now_ms
+                self._tone(ALARM_TONES[0][0], MAX_TONE_DUTY)
+                self.set_led("red")
             else:
                 self.audio_pwm.set_duty_u16(0)
-        elif cmd_name == "thresholds_set":
-            self.temp_min = float(data.get("temp_min", self.temp_min))
-            self.temp_max = float(data.get("temp_max", self.temp_max))
-            self.hum_min = float(data.get("hum_min", self.hum_min))
-            self.hum_max = float(data.get("hum_max", self.hum_max))
-        elif cmd_name == "song_play":
-            song_id = int(data.get("song_id", 1))
-            vol_pct = max(0, min(100, int(data.get("volume_pct", 50))))
-            self.playing_song_id = song_id
-            notes = EMBEDDED_SONG_NOTES.get(song_id, EMBEDDED_SONG_NOTES[1])
-            first_freq = notes[0][0]
-            # Escala el ciclo de trabajo al volumen máximo permitido (<= 65 dBA, RNF08)
-            max_safe_duty = int(round((vol_pct / 100.0) * 16384))
-            self.audio_pwm.set_freq(first_freq)
-            self.audio_pwm.set_duty_u16(max_safe_duty)
-        elif cmd_name == "song_stop":
-            self.playing_song_id = None
-            self.audio_pwm.set_duty_u16(0)
-        elif cmd_name == "audio_chunk":
-            pcm_b64 = str(data.get("pcm_b64", ""))
-            raw_pcm = base64.b64decode(pcm_b64) if pcm_b64 else b""
-            self.last_pcm_samples_played = len(raw_pcm)
-            self.audio_pwm.set_freq(int(CENTRAL_PINS["audio_carrier_freq_hz"]))
-            if raw_pcm:
-                last_sample = raw_pcm[-1]
-                self.audio_pwm.set_duty_u16(int((last_sample / 255.0) * 32768))
+                self.set_led(MODE_COLORS.get(self.mode, "green"))
+        elif cmd == "thresholds_set":
+            self.apply_config(params)
+        elif cmd == "song_play":
+            if params.get("action", "play") == "stop":
+                self.stop_song()
+                return True, None
+            notes = []
+            for n in params.get("notes") or []:
+                freq, ms = int(n.get("freq_hz", 0)), int(n.get("ms", 0))
+                if 0 <= freq <= 5000 and 0 < ms <= 5000:
+                    notes.append((freq, ms))
+            if not notes:
+                return False, "sin_notas"
+            self.song_notes = notes
+            self.song_code = params.get("song")
+            self._song_idx = 0
+            self._note_start_ms = now_ms
+            duration_s = int(params.get("duration_s", 0))
+            self._song_end_ms = now_ms + duration_s * 1000 if duration_s > 0 else None
+            if not self.alarm_active and not self.intercom.active:
+                self._tone(notes[0][0], MAX_TONE_DUTY // 2)
+        elif cmd == "audio_chunk":
+            if self.alarm_active:
+                return False, "alarma_activa"
+            rate = int(params.get("rate", 8000))
+            if rate < 4000 or rate > 16000:
+                return False, "rate_invalido"
+            pcm = b64decode(str(params.get("pcm_b64", "")))
+            if not pcm or len(pcm) > 1280:
+                return False, "pcm_invalido"
+            if not self.intercom.enqueue(pcm, rate):
+                return False, "cola_audio_llena"
         else:
-            return {
-                "v": 1,
-                "t": "ack",
-                "seq": self.buffer.next_seq(),
-                "ts": ts,
-                "d": {"ack_seq": cmd_seq, "ok": False, "error": f"unknown_cmd:{cmd_name}"},
-            }
+            return False, "unknown_cmd"
+        return True, None
 
-        return {
-            "v": 1,
-            "t": "ack",
-            "seq": self.buffer.next_seq(),
-            "ts": ts,
-            "d": {"ack_seq": cmd_seq, "ok": True},
-        }
+
+if IS_MICROPYTHON:
+    import secrets  # type: ignore  # noqa: E402 - solo existe en la Pico, nunca en Git
+
+    run(CentralNode(), secrets)
