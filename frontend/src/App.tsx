@@ -20,6 +20,7 @@ import {
 } from "./lib/api";
 import { ProfileSelectorBar } from "./components/ProfileSelectorBar";
 import { CribAndDeviceManager } from "./components/CribAndDeviceManager";
+import { TelegramAndRemindersPanel } from "./components/TelegramAndRemindersPanel";
 import { AcceptInvitationPage } from "./pages/AcceptInvitationPage";
 
 export default function App() {
@@ -381,6 +382,13 @@ export default function App() {
               accessToken={accessToken}
               activeProfileId={activeProfileId}
               userRole={account.rol}
+              onError={setErrorBanner}
+            />
+
+            {/* M6: Vinculación de Telegram por usuario (RF38 / RF39 / RF19) y Recordatorios de Tomas (RF18) */}
+            <TelegramAndRemindersPanel
+              accessToken={accessToken}
+              activeProfileId={activeProfileId}
               onError={setErrorBanner}
             />
 

@@ -2,6 +2,7 @@ using CunaServer.Api;
 using CunaServer.Data;
 using CunaServer.Services;
 using CunaServer.Tcp;
+using CunaServer.Telegram;
 
 LoadDotEnvIfExists();
 
@@ -51,12 +52,29 @@ else
     builder.Services.AddSingleton<IDeviceTelemetryRepository, InMemoryDeviceTelemetryRepository>();
 }
 
+var telegramBotToken = builder.Configuration["TELEGRAM_BOT_TOKEN"];
+if (!string.IsNullOrWhiteSpace(telegramBotToken))
+{
+    builder.Services.AddSingleton<ITelegramBotTransport>(sp =>
+    {
+        var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
+        var logger = sp.GetRequiredService<ILogger<HttpTelegramBotTransport>>();
+        return new HttpTelegramBotTransport(httpFactory.CreateClient("TelegramBotClient"), telegramBotToken, logger);
+    });
+}
+else
+{
+    builder.Services.AddSingleton<ITelegramBotTransport, InMemoryTelegramBotTransport>();
+}
+
 builder.Services.AddSingleton<FamilyAccountService>();
 builder.Services.AddSingleton<DeviceTcpServer>();
 builder.Services.AddSingleton<IntercomAudioService>();
 builder.Services.AddSingleton<PairingAndCribService>();
+builder.Services.AddSingleton<TelegramBotService>();
 builder.Services.AddSingleton<CribLiveControlService>();
 builder.Services.AddHostedService<CribWatchdogBackgroundService>();
+builder.Services.AddHostedService<TelegramPollingAndRemindersBackgroundService>();
 if (!string.Equals(builder.Configuration["TCP_SERVER_ENABLED"], "false", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddHostedService(sp => sp.GetRequiredService<DeviceTcpServer>());
@@ -74,6 +92,7 @@ app.MapAccountAndFamilyEndpoints();
 app.MapIntercomEndpoints();
 app.MapPairingAndCribEndpoints();
 app.MapCribLiveControlEndpoints();
+app.MapTelegramAndRemindersEndpoints();
 
 await app.RunAsync();
 
