@@ -131,6 +131,68 @@ export interface FeedingReminderRecord {
   actualizadoEn: string;
 }
 
+export interface FeedingSessionRecord {
+  id: string;
+  bebeId: string;
+  perfilId: string | null;
+  masaInicialG: number;
+  masaFinalG: number | null;
+  mlConsumidos: number | null;
+  tempC: number | null;
+  alertaTemperatura: boolean;
+  inicio: string;
+  fin: string | null;
+}
+
+export interface SleepSessionRecord {
+  id: string;
+  bebeId: string;
+  cunaId: string;
+  tipo: "siesta" | "noche";
+  inicio: string;
+  fin: string | null;
+  movimientoPromedio: number | null;
+  interrupciones: number;
+}
+
+export interface SongCatalogItem {
+  id: string;
+  codigo: string;
+  nombre: string;
+  duracionSegundos: number;
+  notasJson: string;
+}
+
+export interface ToyUsageRecord {
+  id: string;
+  cunaId: string;
+  tipo: string;
+  perfilId: string | null;
+  inicio: string;
+  duracionSegundos: number;
+  aciertos: number | null;
+  patron: string | null;
+  velocidad: string | null;
+}
+
+export interface ToysAndPeripheralsStatusResponse {
+  historialUso: ToyUsageRecord[];
+  bateriaJuguetePct: number | null;
+  alertaBateriaBajaJuguete: boolean;
+  bateriaBiberonPct: number | null;
+  ultimaMasaBiberonG: number | null;
+  ultimaTempBiberonC: number | null;
+}
+
+export interface ExportHistoryResponse {
+  fileName: string;
+  contentType: string;
+  contentBase64: string;
+  sleepSessionsCount: number;
+  feedingSessionsCount: number;
+  elapsedMs: number;
+}
+
 export interface BabyRecord {
   id: string;
   familyId: string;
@@ -462,5 +524,153 @@ export const accountApi = {
       method: "PUT",
       body: JSON.stringify(payload),
     });
+  },
+
+  startFeedingSession(
+    accessToken: string,
+    payload: {
+      bebeId: string;
+      masaInicialG: number;
+      tempC?: number | null;
+      perfilId?: string | null;
+    }
+  ): Promise<FeedingSessionRecord> {
+    return requestJson<FeedingSessionRecord>("/api/feeding/sessions/start", accessToken, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  finishFeedingSession(
+    accessToken: string,
+    sessionId: string,
+    payload: { masaFinalG: number; perfilId?: string | null }
+  ): Promise<FeedingSessionRecord> {
+    return requestJson<FeedingSessionRecord>(
+      `/api/feeding/sessions/${sessionId}/finish`,
+      accessToken,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+  },
+
+  getFeedingHistory(
+    accessToken: string,
+    bebeId: string,
+    desde?: string,
+    hasta?: string
+  ): Promise<FeedingSessionRecord[]> {
+    const params = new URLSearchParams();
+    if (desde) params.set("desde", desde);
+    if (hasta) params.set("hasta", hasta);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return requestJson<FeedingSessionRecord[]>(
+      `/api/babies/${bebeId}/history/feeding${qs}`,
+      accessToken
+    );
+  },
+
+  createSleepSession(
+    accessToken: string,
+    bebeId: string,
+    payload: {
+      cunaId: string;
+      tipo: "siesta" | "noche";
+      inicio: string;
+      fin?: string | null;
+      movimientoPromedio?: number | null;
+      interrupciones?: number;
+      perfilId?: string | null;
+    }
+  ): Promise<SleepSessionRecord> {
+    return requestJson<SleepSessionRecord>(
+      `/api/babies/${bebeId}/history/sleep`,
+      accessToken,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+  },
+
+  getSleepHistory(
+    accessToken: string,
+    bebeId: string,
+    desde?: string,
+    hasta?: string,
+    tipo?: string
+  ): Promise<SleepSessionRecord[]> {
+    const params = new URLSearchParams();
+    if (desde) params.set("desde", desde);
+    if (hasta) params.set("hasta", hasta);
+    if (tipo) params.set("tipo", tipo);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return requestJson<SleepSessionRecord[]>(
+      `/api/babies/${bebeId}/history/sleep${qs}`,
+      accessToken
+    );
+  },
+
+  exportBabyHistory(
+    accessToken: string,
+    bebeId: string,
+    payload: {
+      formato: "csv" | "pdf";
+      desde?: string | null;
+      hasta?: string | null;
+      perfilId?: string | null;
+    }
+  ): Promise<ExportHistoryResponse> {
+    return requestJson<ExportHistoryResponse>(
+      `/api/babies/${bebeId}/history/export`,
+      accessToken,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+  },
+
+  listSongs(accessToken: string, cunaId: string): Promise<SongCatalogItem[]> {
+    return requestJson<SongCatalogItem[]>(`/api/cribs/${cunaId}/songs`, accessToken);
+  },
+
+  playSong(
+    accessToken: string,
+    cunaId: string,
+    payload: { codigo: string; accion: "play" | "stop"; perfilId?: string | null }
+  ): Promise<boolean> {
+    return requestJson<boolean>(`/api/cribs/${cunaId}/songs/play`, accessToken, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  playMobile(
+    accessToken: string,
+    cunaId: string,
+    payload: {
+      patron: string;
+      velocidad: "lenta" | "media" | "rapida";
+      duracionSegundos: number;
+      perfilId?: string | null;
+    }
+  ): Promise<ToyUsageRecord> {
+    return requestJson<ToyUsageRecord>(`/api/cribs/${cunaId}/mobile/play`, accessToken, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getToysStatus(
+    accessToken: string,
+    cunaId: string
+  ): Promise<ToysAndPeripheralsStatusResponse> {
+    return requestJson<ToysAndPeripheralsStatusResponse>(
+      `/api/cribs/${cunaId}/toys`,
+      accessToken
+    );
   },
 };

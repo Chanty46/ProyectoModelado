@@ -51,6 +51,36 @@ public interface IDeviceTelemetryRepository
     Task<IReadOnlyList<CribRecord>> ListAllCribsAsync(CancellationToken ct);
     Task LogCaregiverActionAsync(CaregiverAuditLogEntry entry, CancellationToken ct);
     Task<IReadOnlyList<CaregiverAuditLogEntry>> ListCaregiverActionsAsync(Guid familyId, CancellationToken ct);
+
+    // M7: Alimentación, sueño, canciones, juguetes e historiales (RF12–RF17, RF30–RF37)
+    Task<BabyRecord?> GetBabyByIdAsync(Guid bebeId, CancellationToken ct);
+    Task<FeedingSessionRecord> CreateFeedingSessionAsync(
+        Guid bebeId,
+        Guid? perfilId,
+        decimal masaInicialG,
+        decimal? tempC,
+        bool alertaTemperatura,
+        DateTimeOffset inicio,
+        CancellationToken ct);
+    Task<FeedingSessionRecord?> GetFeedingSessionByIdAsync(Guid sessionId, CancellationToken ct);
+    Task<FeedingSessionRecord?> CompleteFeedingSessionAsync(
+        Guid sessionId,
+        decimal masaFinalG,
+        decimal mlConsumidos,
+        DateTimeOffset fin,
+        CancellationToken ct);
+    Task<IReadOnlyList<FeedingSessionRecord>> ListFeedingSessionsByBabyAsync(Guid bebeId, CancellationToken ct);
+    Task<SleepSessionRecord> CreateSleepSessionAsync(
+        Guid bebeId,
+        Guid cunaId,
+        string tipo,
+        DateTimeOffset inicio,
+        DateTimeOffset? fin,
+        decimal? movimientoPromedio,
+        int interrupciones,
+        CancellationToken ct);
+    Task<IReadOnlyList<SleepSessionRecord>> ListSleepSessionsByBabyAsync(Guid bebeId, CancellationToken ct);
+    Task<IReadOnlyList<SongCatalogItem>> ListSongCatalogAsync(CancellationToken ct);
 }
 
 public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryRepository
@@ -65,6 +95,9 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
     private readonly ConcurrentQueue<ToyUsageRecord> _toyUsage = new();
     private readonly ConcurrentQueue<SecurityAuditEntry> _securityAudit = new();
     private readonly ConcurrentQueue<CaregiverAuditLogEntry> _caregiverActions = new();
+    private readonly ConcurrentDictionary<Guid, FeedingSessionRecord> _feedingSessions = new();
+    private readonly ConcurrentDictionary<Guid, SleepSessionRecord> _sleepSessions = new();
+    private readonly List<SongCatalogItem> _songs = new();
     private readonly object _seqLock = new();
 
     public InMemoryDeviceTelemetryRepository()
@@ -151,6 +184,28 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
         SeedFactoryUnclaimedDevice("pico-movil-nuevo", DeviceTypes.Movil, "RECLAMO-MOVIL-1003");
         SeedFactoryUnclaimedDevice("pico-biberon-nuevo", DeviceTypes.Biberon, "RECLAMO-BIBERON-1004");
         SeedFactoryUnclaimedDevice("pico-juguete-nuevo", DeviceTypes.Juguete, "RECLAMO-JUGUETE-1005");
+
+        _songs.AddRange(new[]
+        {
+            new SongCatalogItem(
+                Guid.Parse("cccccccc-0001-4000-8000-000000000001"),
+                "estrellita",
+                "Estrellita ¿Dónde Estás?",
+                30,
+                """[{"freq_hz":262,"ms":400},{"freq_hz":262,"ms":400},{"freq_hz":392,"ms":400},{"freq_hz":392,"ms":400},{"freq_hz":440,"ms":400},{"freq_hz":440,"ms":400},{"freq_hz":392,"ms":800}]"""),
+            new SongCatalogItem(
+                Guid.Parse("cccccccc-0002-4000-8000-000000000002"),
+                "cancion_cuna_brahms",
+                "Canción de Cuna (Brahms)",
+                45,
+                """[{"freq_hz":330,"ms":400},{"freq_hz":330,"ms":400},{"freq_hz":392,"ms":800},{"freq_hz":330,"ms":400},{"freq_hz":330,"ms":400},{"freq_hz":392,"ms":800}]"""),
+            new SongCatalogItem(
+                Guid.Parse("cccccccc-0003-4000-8000-000000000003"),
+                "arrullo_suave",
+                "Arrullo Nocturno Suave",
+                30,
+                """[{"freq_hz":294,"ms":500},{"freq_hz":330,"ms":500},{"freq_hz":262,"ms":1000}]""")
+        });
     }
 
     public void SeedFactoryUnclaimedDevice(
@@ -686,6 +741,113 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
     {
         var list = _caregiverActions.Where(a => a.FamilyId == familyId).OrderBy(a => a.Ts).ToList();
         return Task.FromResult<IReadOnlyList<CaregiverAuditLogEntry>>(list);
+    }
+
+    public Task<BabyRecord?> GetBabyByIdAsync(Guid bebeId, CancellationToken ct)
+    {
+        _babies.TryGetValue(bebeId, out var baby);
+        return Task.FromResult(baby);
+    }
+
+    public Task<FeedingSessionRecord> CreateFeedingSessionAsync(
+        Guid bebeId,
+        Guid? perfilId,
+        decimal masaInicialG,
+        decimal? tempC,
+        bool alertaTemperatura,
+        DateTimeOffset inicio,
+        CancellationToken ct)
+    {
+        var record = new FeedingSessionRecord(
+            Guid.NewGuid(),
+            bebeId,
+            perfilId,
+            masaInicialG,
+            null,
+            null,
+            tempC,
+            alertaTemperatura,
+            inicio,
+            null);
+        _feedingSessions[record.Id] = record;
+        return Task.FromResult(record);
+    }
+
+    public Task<FeedingSessionRecord?> GetFeedingSessionByIdAsync(Guid sessionId, CancellationToken ct)
+    {
+        _feedingSessions.TryGetValue(sessionId, out var record);
+        return Task.FromResult(record);
+    }
+
+    public Task<FeedingSessionRecord?> CompleteFeedingSessionAsync(
+        Guid sessionId,
+        decimal masaFinalG,
+        decimal mlConsumidos,
+        DateTimeOffset fin,
+        CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            if (!_feedingSessions.TryGetValue(sessionId, out var current))
+            {
+                return Task.FromResult<FeedingSessionRecord?>(null);
+            }
+
+            var updated = current with
+            {
+                MasaFinalG = masaFinalG,
+                MlConsumidos = mlConsumidos,
+                Fin = fin
+            };
+            _feedingSessions[sessionId] = updated;
+            return Task.FromResult<FeedingSessionRecord?>(updated);
+        }
+    }
+
+    public Task<IReadOnlyList<FeedingSessionRecord>> ListFeedingSessionsByBabyAsync(Guid bebeId, CancellationToken ct)
+    {
+        var list = _feedingSessions.Values
+            .Where(s => s.BebeId == bebeId)
+            .OrderByDescending(s => s.Inicio)
+            .ToList();
+        return Task.FromResult<IReadOnlyList<FeedingSessionRecord>>(list);
+    }
+
+    public Task<SleepSessionRecord> CreateSleepSessionAsync(
+        Guid bebeId,
+        Guid cunaId,
+        string tipo,
+        DateTimeOffset inicio,
+        DateTimeOffset? fin,
+        decimal? movimientoPromedio,
+        int interrupciones,
+        CancellationToken ct)
+    {
+        var record = new SleepSessionRecord(
+            Guid.NewGuid(),
+            bebeId,
+            cunaId,
+            tipo,
+            inicio,
+            fin,
+            movimientoPromedio,
+            interrupciones);
+        _sleepSessions[record.Id] = record;
+        return Task.FromResult(record);
+    }
+
+    public Task<IReadOnlyList<SleepSessionRecord>> ListSleepSessionsByBabyAsync(Guid bebeId, CancellationToken ct)
+    {
+        var list = _sleepSessions.Values
+            .Where(s => s.BebeId == bebeId)
+            .OrderByDescending(s => s.Inicio)
+            .ToList();
+        return Task.FromResult<IReadOnlyList<SleepSessionRecord>>(list);
+    }
+
+    public Task<IReadOnlyList<SongCatalogItem>> ListSongCatalogAsync(CancellationToken ct)
+    {
+        return Task.FromResult<IReadOnlyList<SongCatalogItem>>(_songs.ToList());
     }
 }
 
@@ -1373,6 +1535,131 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
             r.Ts)).ToList() ?? [];
     }
 
+    public async Task<BabyRecord?> GetBabyByIdAsync(Guid bebeId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<BabyDto>>(
+            $"bebes?id=eq.{bebeId}&limit=1",
+            JsonOptions,
+            ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<FeedingSessionRecord> CreateFeedingSessionAsync(
+        Guid bebeId,
+        Guid? perfilId,
+        decimal masaInicialG,
+        decimal? tempC,
+        bool alertaTemperatura,
+        DateTimeOffset inicio,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, "sesiones_alimentacion");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            bebe_id = bebeId,
+            perfil_id = perfilId,
+            m_inicial = masaInicialG,
+            temp_c = tempC,
+            alerta_temperatura = alertaTemperatura,
+            inicio
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<FeedingSessionDto>>(JsonOptions, ct);
+        return rows!.Single().ToModel();
+    }
+
+    public async Task<FeedingSessionRecord?> GetFeedingSessionByIdAsync(Guid sessionId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<FeedingSessionDto>>(
+            $"sesiones_alimentacion?id=eq.{sessionId}&limit=1",
+            JsonOptions,
+            ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<FeedingSessionRecord?> CompleteFeedingSessionAsync(
+        Guid sessionId,
+        decimal masaFinalG,
+        decimal mlConsumidos,
+        DateTimeOffset fin,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"sesiones_alimentacion?id=eq.{sessionId}");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            m_final = masaFinalG,
+            ml = mlConsumidos,
+            fin
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<FeedingSessionDto>>(JsonOptions, ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<IReadOnlyList<FeedingSessionRecord>> ListFeedingSessionsByBabyAsync(Guid bebeId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<FeedingSessionDto>>(
+            $"sesiones_alimentacion?bebe_id=eq.{bebeId}&order=inicio.desc",
+            JsonOptions,
+            ct);
+        return rows?.Select(r => r.ToModel()).ToList() ?? [];
+    }
+
+    public async Task<SleepSessionRecord> CreateSleepSessionAsync(
+        Guid bebeId,
+        Guid cunaId,
+        string tipo,
+        DateTimeOffset inicio,
+        DateTimeOffset? fin,
+        decimal? movimientoPromedio,
+        int interrupciones,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, "sesiones_sueno");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            bebe_id = bebeId,
+            cuna_id = cunaId,
+            tipo,
+            inicio,
+            fin,
+            movimiento_promedio = movimientoPromedio,
+            interrupciones
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<SleepSessionDto>>(JsonOptions, ct);
+        return rows!.Single().ToModel();
+    }
+
+    public async Task<IReadOnlyList<SleepSessionRecord>> ListSleepSessionsByBabyAsync(Guid bebeId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<SleepSessionDto>>(
+            $"sesiones_sueno?bebe_id=eq.{bebeId}&order=inicio.desc",
+            JsonOptions,
+            ct);
+        return rows?.Select(r => r.ToModel()).ToList() ?? [];
+    }
+
+    public async Task<IReadOnlyList<SongCatalogItem>> ListSongCatalogAsync(CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<SongCatalogDto>>(
+            "canciones?order=nombre.asc",
+            JsonOptions,
+            ct);
+        return rows?.Select(r => new SongCatalogItem(
+            r.Id,
+            r.Codigo,
+            r.Nombre,
+            r.DuracionS,
+            r.NotasJson?.GetRawText() ?? "[]")).ToList() ?? [];
+    }
+
     private sealed record DeviceRowDto(
         Guid Id,
         string DeviceId,
@@ -1480,4 +1767,41 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
         string Accion,
         JsonElement? Detalle,
         DateTimeOffset Ts);
+
+    private sealed record FeedingSessionDto(
+        Guid Id,
+        Guid BebeId,
+        Guid? PerfilId,
+        decimal MInicial,
+        decimal? MFinal,
+        decimal? Ml,
+        decimal? TempC,
+        bool AlertaTemperatura,
+        DateTimeOffset Inicio,
+        DateTimeOffset? Fin)
+    {
+        public FeedingSessionRecord ToModel() => new(
+            Id, BebeId, PerfilId, MInicial, MFinal, Ml, TempC, AlertaTemperatura, Inicio, Fin);
+    }
+
+    private sealed record SleepSessionDto(
+        Guid Id,
+        Guid BebeId,
+        Guid CunaId,
+        string Tipo,
+        DateTimeOffset Inicio,
+        DateTimeOffset? Fin,
+        decimal? MovimientoPromedio,
+        int Interrupciones)
+    {
+        public SleepSessionRecord ToModel() => new(
+            Id, BebeId, CunaId, Tipo, Inicio, Fin, MovimientoPromedio, Interrupciones);
+    }
+
+    private sealed record SongCatalogDto(
+        Guid Id,
+        string Codigo,
+        string Nombre,
+        int DuracionS,
+        JsonElement? NotasJson);
 }
