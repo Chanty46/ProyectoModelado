@@ -50,13 +50,61 @@ export interface CribRecord {
   familyId: string;
   nombre: string;
   estadoConexion: string;
-  modoOperacion: "monitoreo" | "atencion";
+  modoOperacion: "monitoreo" | "atencion" | "alarma";
   modoAtencionExpiraEn: string | null;
   luzEncendida: boolean;
   luzNivel: number;
   escalaMasa: number;
   ultimoHeartbeat: string | null;
   creadoEn: string;
+}
+
+export interface CribConfig {
+  cunaId: string;
+  familyId: string;
+  escalaMasa: number;
+  tempMin: number;
+  tempMax: number;
+  humMin: number;
+  humMax: number;
+  movimientoUmbral: number;
+  movimientoAlertaActiva: boolean;
+  ruidoMasaPiso: number;
+}
+
+export interface TelemetryRecord {
+  cunaId: string;
+  dispositivoId: string;
+  ts: string;
+  masaKg: number | null;
+  indiceMovimiento: number | null;
+  tempC: number | null;
+  humedad: number | null;
+  masaBiberonG: number | null;
+  tempBiberonC: number | null;
+  bateriaPct: number | null;
+  seq: number;
+}
+
+export interface EventAlertRecord {
+  id: string;
+  cunaId: string;
+  dispositivoId: string;
+  tipo: string;
+  severidad: "info" | "advertencia" | "critica";
+  mensaje: string | null;
+  datosJson: string | null;
+  ts: string;
+}
+
+export interface LiveCribStatusResponse {
+  cuna: CribRecord;
+  umbrales: CribConfig;
+  ultimaTelemetria: TelemetryRecord | null;
+  telemetriaReciente: TelemetryRecord[];
+  alertasRecientes: EventAlertRecord[];
+  dispositivos: ClaimableDeviceRecord[];
+  enVentanaGraciaRetiro: boolean;
 }
 
 export interface BabyRecord {
@@ -304,6 +352,60 @@ export const accountApi = {
   ): Promise<BabyRecord> {
     return requestJson<BabyRecord>(`/api/babies/${babyId}`, accessToken, {
       method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getLiveCribStatus(
+    accessToken: string,
+    cunaId: string
+  ): Promise<LiveCribStatusResponse> {
+    return requestJson<LiveCribStatusResponse>(`/api/cribs/${cunaId}/live`, accessToken);
+  },
+
+  setCribMode(
+    accessToken: string,
+    cunaId: string,
+    payload: { modo: "monitoreo" | "atencion"; perfilId?: string | null }
+  ): Promise<CribRecord> {
+    return requestJson<CribRecord>(`/api/cribs/${cunaId}/mode`, accessToken, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  setCribLight(
+    accessToken: string,
+    cunaId: string,
+    payload: { encendida: boolean; nivel: number; perfilId?: string | null }
+  ): Promise<CribRecord> {
+    return requestJson<CribRecord>(`/api/cribs/${cunaId}/light`, accessToken, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getCribThresholds(accessToken: string, cunaId: string): Promise<CribConfig> {
+    return requestJson<CribConfig>(`/api/cribs/${cunaId}/thresholds`, accessToken);
+  },
+
+  updateCribThresholds(
+    accessToken: string,
+    cunaId: string,
+    payload: {
+      tempMin: number;
+      tempMax: number;
+      humMin: number;
+      humMax: number;
+      movimientoUmbral: number;
+      movimientoAlertaActiva: boolean;
+      ruidoMasaPiso: number;
+      escalaMasa: number;
+      perfilId?: string | null;
+    }
+  ): Promise<CribConfig> {
+    return requestJson<CribConfig>(`/api/cribs/${cunaId}/thresholds`, accessToken, {
+      method: "PUT",
       body: JSON.stringify(payload),
     });
   },

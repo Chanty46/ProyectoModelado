@@ -41,6 +41,16 @@ public interface IDeviceTelemetryRepository
     Task<IReadOnlyList<BabyRecord>> ListBabiesByFamilyAsync(Guid familyId, CancellationToken ct);
     Task<BabyRecord> CreateBabyAsync(Guid familyId, Guid cunaId, string nombre, DateOnly fechaNacimiento, string? notas, CancellationToken ct);
     Task<BabyRecord?> UpdateBabyAsync(Guid familyId, Guid bebeId, Guid cunaId, string nombre, DateOnly fechaNacimiento, string? notas, CancellationToken ct);
+
+    // M5: Cuna en vivo (RF04, RF05, RF07, RF08, RF09, RF20, RF29)
+    Task<IReadOnlyList<RegisteredDevice>> ListActiveDevicesForCribAsync(Guid cunaId, CancellationToken ct);
+    Task<CribRecord?> UpdateCribModeAsync(Guid cunaId, string modoOperacion, DateTimeOffset? modoAtencionExpiraEn, CancellationToken ct);
+    Task<CribRecord?> UpdateCribLightAsync(Guid cunaId, bool luzEncendida, int luzNivel, CancellationToken ct);
+    Task<CribConfig> UpdateCribThresholdsAsync(Guid cunaId, Guid familyId, UpdateCribThresholdsRequest request, CancellationToken ct);
+    Task<CribRecord?> UpdateCribConnectionStateAsync(Guid cunaId, string estadoConexion, CancellationToken ct);
+    Task<IReadOnlyList<CribRecord>> ListAllCribsAsync(CancellationToken ct);
+    Task LogCaregiverActionAsync(CaregiverAuditLogEntry entry, CancellationToken ct);
+    Task<IReadOnlyList<CaregiverAuditLogEntry>> ListCaregiverActionsAsync(Guid familyId, CancellationToken ct);
 }
 
 public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryRepository
@@ -54,6 +64,7 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
     private readonly ConcurrentQueue<EventAlertRecord> _alerts = new();
     private readonly ConcurrentQueue<ToyUsageRecord> _toyUsage = new();
     private readonly ConcurrentQueue<SecurityAuditEntry> _securityAudit = new();
+    private readonly ConcurrentQueue<CaregiverAuditLogEntry> _caregiverActions = new();
     private readonly object _seqLock = new();
 
     public InMemoryDeviceTelemetryRepository()
@@ -229,6 +240,25 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
                     BateriaPct = batteryPct ?? entry.BateriaPct,
                     UltimoHeartbeat = now,
                     FwVersion = fwVersion ?? entry.FwVersion
+                };
+
+                if (_claimableDevices.TryGetValue(entry.DeviceId, out var claimable))
+                {
+                    _claimableDevices[entry.DeviceId] = claimable with
+                    {
+                        Estado = "en_linea",
+                        BateriaPct = batteryPct ?? claimable.BateriaPct,
+                        FwVersion = fwVersion ?? claimable.FwVersion
+                    };
+                }
+            }
+
+            if (deviceType == DeviceTypes.Central && _cribs.TryGetValue(cunaId, out var crib))
+            {
+                _cribs[cunaId] = crib with
+                {
+                    EstadoConexion = "en_linea",
+                    UltimoHeartbeat = now
                 };
             }
         }
@@ -523,6 +553,139 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
             _babies[bebeId] = updated;
             return Task.FromResult<BabyRecord?>(updated);
         }
+    }
+
+    public Task<IReadOnlyList<RegisteredDevice>> ListActiveDevicesForCribAsync(Guid cunaId, CancellationToken ct)
+    {
+        var list = _devicesByDeviceId.Values
+            .Where(d => d.CunaId == cunaId && d.Estado is not ("revocado" or "sin_dueno"))
+            .ToList();
+        return Task.FromResult<IReadOnlyList<RegisteredDevice>>(list);
+    }
+
+    public Task<CribRecord?> UpdateCribModeAsync(
+        Guid cunaId,
+        string modoOperacion,
+        DateTimeOffset? modoAtencionExpiraEn,
+        CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            if (!_cribs.TryGetValue(cunaId, out var current))
+            {
+                return Task.FromResult<CribRecord?>(null);
+            }
+
+            var updated = current with
+            {
+                ModoOperacion = modoOperacion,
+                ModoAtencionExpiraEn = modoAtencionExpiraEn
+            };
+            _cribs[cunaId] = updated;
+            return Task.FromResult<CribRecord?>(updated);
+        }
+    }
+
+    public Task<CribRecord?> UpdateCribLightAsync(
+        Guid cunaId,
+        bool luzEncendida,
+        int luzNivel,
+        CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            if (!_cribs.TryGetValue(cunaId, out var current))
+            {
+                return Task.FromResult<CribRecord?>(null);
+            }
+
+            var updated = current with
+            {
+                LuzEncendida = luzEncendida,
+                LuzNivel = luzNivel
+            };
+            _cribs[cunaId] = updated;
+            return Task.FromResult<CribRecord?>(updated);
+        }
+    }
+
+    public Task<CribConfig> UpdateCribThresholdsAsync(
+        Guid cunaId,
+        Guid familyId,
+        UpdateCribThresholdsRequest request,
+        CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            var updatedCfg = new CribConfig(
+                cunaId,
+                familyId,
+                request.EscalaMasa,
+                request.TempMin,
+                request.TempMax,
+                request.HumMin,
+                request.HumMax,
+                request.MovimientoUmbral,
+                request.MovimientoAlertaActiva,
+                request.RuidoMasaPiso);
+            _cribConfigs[cunaId] = updatedCfg;
+
+            if (_cribs.TryGetValue(cunaId, out var crib))
+            {
+                _cribs[cunaId] = crib with { EscalaMasa = request.EscalaMasa };
+            }
+
+            return Task.FromResult(updatedCfg);
+        }
+    }
+
+    public Task<CribRecord?> UpdateCribConnectionStateAsync(
+        Guid cunaId,
+        string estadoConexion,
+        CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            if (!_cribs.TryGetValue(cunaId, out var current))
+            {
+                return Task.FromResult<CribRecord?>(null);
+            }
+
+            var updated = current with { EstadoConexion = estadoConexion };
+            _cribs[cunaId] = updated;
+
+            if (estadoConexion == "desconectada")
+            {
+                foreach (var dev in _devicesByDeviceId.Values.Where(d => d.CunaId == cunaId).ToList())
+                {
+                    _devicesByDeviceId[dev.DeviceId] = dev with { Estado = "desconectado" };
+                    if (_claimableDevices.TryGetValue(dev.DeviceId, out var cl))
+                    {
+                        _claimableDevices[dev.DeviceId] = cl with { Estado = "desconectado" };
+                    }
+                }
+            }
+
+            return Task.FromResult<CribRecord?>(updated);
+        }
+    }
+
+    public Task<IReadOnlyList<CribRecord>> ListAllCribsAsync(CancellationToken ct)
+    {
+        var list = _cribs.Values.OrderBy(c => c.CreadoEn).ToList();
+        return Task.FromResult<IReadOnlyList<CribRecord>>(list);
+    }
+
+    public Task LogCaregiverActionAsync(CaregiverAuditLogEntry entry, CancellationToken ct)
+    {
+        _caregiverActions.Enqueue(entry);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<CaregiverAuditLogEntry>> ListCaregiverActionsAsync(Guid familyId, CancellationToken ct)
+    {
+        var list = _caregiverActions.Where(a => a.FamilyId == familyId).OrderBy(a => a.Ts).ToList();
+        return Task.FromResult<IReadOnlyList<CaregiverAuditLogEntry>>(list);
     }
 }
 
@@ -1046,6 +1209,170 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
         return rows?.FirstOrDefault()?.ToModel();
     }
 
+    public async Task<IReadOnlyList<RegisteredDevice>> ListActiveDevicesForCribAsync(Guid cunaId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<DeviceRowDto>>(
+            $"dispositivos?cuna_id=eq.{cunaId}&select=id,device_id,cuna_id,tipo,hash_token,estado,bateria_pct,ultimo_seq,ultimo_heartbeat,fw_version",
+            JsonOptions,
+            ct);
+        if (rows is null || rows.Count == 0)
+        {
+            return Array.Empty<RegisteredDevice>();
+        }
+
+        var crib = await GetCribByIdAsync(cunaId, ct);
+        if (crib is null)
+        {
+            return Array.Empty<RegisteredDevice>();
+        }
+
+        return rows
+            .Where(r => r.Estado is not ("revocado" or "sin_dueno") && !string.IsNullOrEmpty(r.HashToken))
+            .Select(r => new RegisteredDevice(
+                r.Id,
+                r.DeviceId,
+                cunaId,
+                crib.FamilyId,
+                r.Tipo,
+                r.HashToken!,
+                r.Estado,
+                r.BateriaPct,
+                r.UltimoSeq,
+                r.UltimoHeartbeat,
+                r.FwVersion))
+            .ToList();
+    }
+
+    public async Task<CribRecord?> UpdateCribModeAsync(
+        Guid cunaId,
+        string modoOperacion,
+        DateTimeOffset? modoAtencionExpiraEn,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"cunas?id=eq.{cunaId}");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            modo_operacion = modoOperacion,
+            modo_atencion_expira_en = modoAtencionExpiraEn
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<CribDto>>(JsonOptions, ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<CribRecord?> UpdateCribLightAsync(
+        Guid cunaId,
+        bool luzEncendida,
+        int luzNivel,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"cunas?id=eq.{cunaId}");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            luz_encendida = luzEncendida,
+            luz_nivel = luzNivel
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<CribDto>>(JsonOptions, ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<CribConfig> UpdateCribThresholdsAsync(
+        Guid cunaId,
+        Guid familyId,
+        UpdateCribThresholdsRequest request,
+        CancellationToken ct)
+    {
+        using var cribReq = new HttpRequestMessage(HttpMethod.Patch, $"cunas?id=eq.{cunaId}&family_id=eq.{familyId}");
+        cribReq.Content = JsonContent.Create(new { escala_masa = request.EscalaMasa }, options: JsonOptions);
+        using var cribRes = await _http.SendAsync(cribReq, ct);
+        cribRes.EnsureSuccessStatusCode();
+
+        using var umbReq = new HttpRequestMessage(HttpMethod.Patch, $"umbrales?cuna_id=eq.{cunaId}");
+        umbReq.Content = JsonContent.Create(new
+        {
+            temp_min = request.TempMin,
+            temp_max = request.TempMax,
+            hum_min = request.HumMin,
+            hum_max = request.HumMax,
+            movimiento_umbral = request.MovimientoUmbral,
+            movimiento_alerta_activa = request.MovimientoAlertaActiva,
+            ruido_masa_piso = request.RuidoMasaPiso,
+            actualizado_en = DateTimeOffset.UtcNow
+        }, options: JsonOptions);
+        using var umbRes = await _http.SendAsync(umbReq, ct);
+        umbRes.EnsureSuccessStatusCode();
+
+        return new CribConfig(
+            cunaId,
+            familyId,
+            request.EscalaMasa,
+            request.TempMin,
+            request.TempMax,
+            request.HumMin,
+            request.HumMax,
+            request.MovimientoUmbral,
+            request.MovimientoAlertaActiva,
+            request.RuidoMasaPiso);
+    }
+
+    public async Task<CribRecord?> UpdateCribConnectionStateAsync(
+        Guid cunaId,
+        string estadoConexion,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"cunas?id=eq.{cunaId}");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new { estado_conexion = estadoConexion }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<CribDto>>(JsonOptions, ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<IReadOnlyList<CribRecord>> ListAllCribsAsync(CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<CribDto>>(
+            "cunas?order=creado_en.asc",
+            JsonOptions,
+            ct);
+        return rows?.Select(r => r.ToModel()).ToList() ?? [];
+    }
+
+    public async Task LogCaregiverActionAsync(CaregiverAuditLogEntry entry, CancellationToken ct)
+    {
+        var payload = new
+        {
+            family_id = entry.FamilyId,
+            usuario_id = entry.UsuarioId,
+            perfil_id = entry.PerfilId,
+            accion = entry.Accion,
+            detalle = entry.DetalleJson is not null ? JsonDocument.Parse(entry.DetalleJson).RootElement : (JsonElement?)null,
+            ts = entry.Ts
+        };
+        using var res = await _http.PostAsJsonAsync("bitacora", payload, JsonOptions, ct);
+        res.EnsureSuccessStatusCode();
+    }
+
+    public async Task<IReadOnlyList<CaregiverAuditLogEntry>> ListCaregiverActionsAsync(Guid familyId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<CaregiverAuditDto>>(
+            $"bitacora?family_id=eq.{familyId}&order=ts.asc",
+            JsonOptions,
+            ct);
+        return rows?.Select(r => new CaregiverAuditLogEntry(
+            r.FamilyId,
+            r.UsuarioId,
+            r.PerfilId,
+            r.Accion,
+            r.Detalle?.GetRawText(),
+            r.Ts)).ToList() ?? [];
+    }
+
     private sealed record DeviceRowDto(
         Guid Id,
         string DeviceId,
@@ -1145,4 +1472,12 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
     {
         public BabyRecord ToModel() => new(Id, FamilyId, CunaId, Nombre, FechaNacimiento, Notas, CreadoEn);
     }
+
+    private sealed record CaregiverAuditDto(
+        Guid FamilyId,
+        Guid? UsuarioId,
+        Guid? PerfilId,
+        string Accion,
+        JsonElement? Detalle,
+        DateTimeOffset Ts);
 }

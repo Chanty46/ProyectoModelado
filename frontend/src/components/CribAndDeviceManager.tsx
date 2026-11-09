@@ -20,15 +20,18 @@ import {
   type ClaimDeviceResponse,
 } from "../lib/api";
 import { IntercomPushToTalk } from "./IntercomPushToTalk";
+import { LiveCribPanel } from "./LiveCribPanel";
 
 interface CribAndDeviceManagerProps {
   accessToken: string;
+  activeProfileId: string | null;
   userRole: "principal" | "secundario" | null;
   onError: (msg: string | null) => void;
 }
 
 export function CribAndDeviceManager({
   accessToken,
+  activeProfileId,
   userRole,
   onError,
 }: CribAndDeviceManagerProps) {
@@ -418,6 +421,16 @@ export function CribAndDeviceManager({
                   })}
                 </div>
               </div>
+
+              {/* M5: Panel reactivo de Cuna en Vivo (< 1 s, IU-01, RF04, RF05, RF06, RF07, RF08, RF09, RF20, RF29) */}
+              <LiveCribPanel
+                accessToken={accessToken}
+                cunaId={activeCribSummary.cuna.id}
+                activeProfileId={activeProfileId}
+                userRole={userRole}
+                onError={onError}
+                onCribUpdated={() => void loadData()}
+              />
 
               {/* RF11: Intercomunicador Push-to-Talk para la cuna seleccionada */}
               <IntercomPushToTalk

@@ -28,6 +28,8 @@ public sealed class DeviceTcpServer : BackgroundService
     private readonly ConcurrentDictionary<string, IpFailureState> _ipFailures = new(StringComparer.Ordinal);
     private readonly TaskCompletionSource<int> _boundPortTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    public Func<RegisteredDevice, EventAlertRecord, CancellationToken, Task<bool>>? DeviceAlertInterceptor { get; set; }
+
     public DeviceTcpServer(
         IDeviceTelemetryRepository repository,
         ILogger<DeviceTcpServer> logger,
@@ -544,7 +546,12 @@ public sealed class DeviceTcpServer : BackgroundService
         {
             if (alertRecord is not null)
             {
-                await _repository.SaveEventAlertAsync(alertRecord, ct);
+                var shouldSave = DeviceAlertInterceptor is null ||
+                                 await DeviceAlertInterceptor(device, alertRecord, ct);
+                if (shouldSave)
+                {
+                    await _repository.SaveEventAlertAsync(alertRecord, ct);
+                }
             }
             else if (toyUsageRecord is not null)
             {

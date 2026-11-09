@@ -376,9 +376,10 @@ export default function App() {
               onSelectProfile={setActiveProfileId}
             />
 
-            {/* M4: Gestión de Cunas, Emparejamiento Pico W (RF24–RF27), Bebé (RF28) e Intercomunicador (RF11) */}
+            {/* M4 + M5: Gestión de Cunas, Emparejamiento Pico W (RF24–RF27), Bebé (RF28), Cuna en Vivo (M5) e Intercomunicador (RF11) */}
             <CribAndDeviceManager
               accessToken={accessToken}
+              activeProfileId={activeProfileId}
               userRole={account.rol}
               onError={setErrorBanner}
             />
