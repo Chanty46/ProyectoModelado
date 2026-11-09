@@ -83,6 +83,26 @@ if (!string.Equals(builder.Configuration["TCP_SERVER_ENABLED"], "false", StringC
 
 var app = builder.Build();
 
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        logger.LogError(ex, "Error no controlado procesando la petición HTTP {Path}", context.Request.Path);
+
+        if (!context.Response.HasStarted)
+        {
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            await context.Response.WriteAsJsonAsync(new { error = "Ocurrió un error interno en el servidor." });
+        }
+    }
+});
+
 // Asegurar que el interceptor de eventos TCP de CribLiveControlService quede registrado al iniciar
 _ = app.Services.GetRequiredService<CribLiveControlService>();
 

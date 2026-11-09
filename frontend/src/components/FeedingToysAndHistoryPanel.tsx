@@ -53,6 +53,10 @@ export function FeedingToysAndHistoryPanel({
   const [filterFrom, setFilterFrom] = useState<string>("");
   const [filterTo, setFilterTo] = useState<string>("");
   const [exportStatusMsg, setExportStatusMsg] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [isSubmittingFeeding, setIsSubmittingFeeding] = useState<boolean>(false);
+  const [isSubmittingMobile, setIsSubmittingMobile] = useState<boolean>(false);
+  const [isSubmittingSong, setIsSubmittingSong] = useState<boolean>(false);
 
   const loadCribPeripherals = useCallback(async () => {
     try {
@@ -127,6 +131,7 @@ export function FeedingToysAndHistoryPanel({
       return;
     }
     onError(null);
+    setIsSubmittingFeeding(true);
     try {
       const created = await accountApi.startFeedingSession(accessToken, {
         bebeId,
@@ -140,6 +145,8 @@ export function FeedingToysAndHistoryPanel({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsSubmittingFeeding(false);
     }
   }
 
@@ -149,6 +156,7 @@ export function FeedingToysAndHistoryPanel({
       return;
     }
     onError(null);
+    setIsSubmittingFeeding(true);
     try {
       await accountApi.finishFeedingSession(accessToken, activeFeedingSession.id, {
         masaFinalG: Number(finalMassG),
@@ -160,11 +168,14 @@ export function FeedingToysAndHistoryPanel({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsSubmittingFeeding(false);
     }
   }
 
   async function handlePlaySong(accion: "play" | "stop") {
     onError(null);
+    setIsSubmittingSong(true);
     try {
       await accountApi.playSong(accessToken, cunaId, {
         codigo: selectedSongCode,
@@ -175,12 +186,15 @@ export function FeedingToysAndHistoryPanel({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsSubmittingSong(false);
     }
   }
 
   async function handlePlayMobile(e: FormEvent) {
     e.preventDefault();
     onError(null);
+    setIsSubmittingMobile(true);
     try {
       await accountApi.playMobile(accessToken, cunaId, {
         patron: mobilePattern,
@@ -193,6 +207,8 @@ export function FeedingToysAndHistoryPanel({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsSubmittingMobile(false);
     }
   }
 
@@ -229,6 +245,7 @@ export function FeedingToysAndHistoryPanel({
     }
     onError(null);
     setExportStatusMsg(null);
+    setIsExporting(true);
     try {
       const res = await accountApi.exportBabyHistory(accessToken, bebeId, {
         formato,
@@ -257,6 +274,8 @@ export function FeedingToysAndHistoryPanel({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsExporting(false);
     }
   }
 
@@ -321,10 +340,10 @@ export function FeedingToysAndHistoryPanel({
               </div>
               <button
                 type="submit"
-                disabled={!bebeId}
-                className="w-full rounded-xl bg-teal-600 px-3 py-2 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+                disabled={!bebeId || isSubmittingFeeding}
+                className="w-full rounded-xl bg-teal-600 px-3 py-2 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
               >
-                Iniciar Sesión de Alimentación (RF37)
+                {isSubmittingFeeding ? "Iniciando toma..." : "Iniciar Sesión de Alimentación (RF37)"}
               </button>
             </form>
           ) : (
@@ -347,9 +366,10 @@ export function FeedingToysAndHistoryPanel({
                 />
                 <button
                   type="submit"
-                  className="rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700"
+                  disabled={isSubmittingFeeding}
+                  className="rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
                 >
-                  Finalizar y calcular ml (RF17)
+                  {isSubmittingFeeding ? "Finalizando..." : "Finalizar y calcular ml (RF17)"}
                 </button>
               </div>
             </form>
@@ -388,15 +408,17 @@ export function FeedingToysAndHistoryPanel({
             </select>
             <button
               type="button"
+              disabled={isSubmittingSong}
               onClick={() => handlePlaySong("play")}
-              className="rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700"
+              className="rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
             >
-              Reproducir
+              {isSubmittingSong ? "Enviando..." : "Reproducir"}
             </button>
             <button
               type="button"
+              disabled={isSubmittingSong}
               onClick={() => handlePlaySong("stop")}
-              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-100"
+              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-50 transition-colors"
             >
               Detener
             </button>
@@ -425,10 +447,11 @@ export function FeedingToysAndHistoryPanel({
             </select>
             <button
               type="submit"
-              className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+              disabled={isSubmittingMobile}
+              className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
             >
               <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-              Móvil ({mobileDuration}s)
+              {isSubmittingMobile ? "Enviando..." : `Móvil (${mobileDuration}s)`}
             </button>
           </form>
         </div>
@@ -470,20 +493,20 @@ export function FeedingToysAndHistoryPanel({
             <button
               type="button"
               onClick={() => handleExport("csv")}
-              disabled={!bebeId}
-              className="inline-flex items-center gap-1 rounded-lg border border-teal-600 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-800 hover:bg-teal-100 disabled:opacity-50"
+              disabled={!bebeId || isExporting}
+              className="inline-flex items-center gap-1 rounded-lg border border-teal-600 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-800 hover:bg-teal-100 disabled:opacity-50 transition-colors"
             >
               <FileDown className="h-3.5 w-3.5" aria-hidden="true" />
-              CSV
+              {isExporting ? "Exportando..." : "CSV"}
             </button>
             <button
               type="button"
               onClick={() => handleExport("pdf")}
-              disabled={!bebeId}
-              className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+              disabled={!bebeId || isExporting}
+              className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
             >
               <FileDown className="h-3.5 w-3.5" aria-hidden="true" />
-              PDF
+              {isExporting ? "Exportando..." : "PDF"}
             </button>
           </div>
         </div>

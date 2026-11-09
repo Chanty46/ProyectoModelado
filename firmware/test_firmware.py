@@ -170,7 +170,8 @@ class FirmwareMicroPythonM9Tests(unittest.TestCase):
         self.assertEqual(juguete.hits, 1)
 
         # Presionar botón incorrecto (fallo)
-        wrong = (target + 1) % len(juguete.buttons)
+        curr_target = juguete.current_target
+        wrong = (curr_target + 1) % len(juguete.buttons)
         is_hit2, _ = juguete._handle_press(wrong, now_ms=7000)
         self.assertFalse(is_hit2)
         self.assertEqual(juguete.hits, 0)

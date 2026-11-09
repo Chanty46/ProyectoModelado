@@ -43,10 +43,15 @@ public sealed class PairingAndCribService
 
     public async Task<ServiceResult<ClaimDeviceResponse>> ClaimDeviceAsync(
         AuthenticatedIdentity identity,
-        ClaimDeviceRequest request,
+        ClaimDeviceRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<ClaimDeviceResponse>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         var (membership, forbidden) = await RequirePrincipalAsync(identity, "reclamar_dispositivo_rf24", clientIp, ct);
         if (forbidden is not null || membership is null)
         {
@@ -223,10 +228,15 @@ public sealed class PairingAndCribService
     public async Task<ServiceResult<CribRecord>> RenameCribAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
-        RenameCribRequest request,
+        RenameCribRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<CribRecord>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         var (membership, forbidden) = await RequirePrincipalAsync(identity, "renombrar_cuna_rf26", clientIp, ct);
         if (forbidden is not null || membership is null)
         {
@@ -248,10 +258,15 @@ public sealed class PairingAndCribService
     public async Task<ServiceResult<bool>> UnlinkCribAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
-        UnlinkCribRequest request,
+        UnlinkCribRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<bool>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         var (membership, forbidden) = await RequirePrincipalAsync(identity, "desvincular_cuna_rf27", clientIp, ct);
         if (forbidden is not null || membership is null)
         {
@@ -364,8 +379,13 @@ public sealed class PairingAndCribService
             : ServiceResult<BabyRecord>.Ok(updated);
     }
 
-    private async Task<string?> ValidateBabyRequestAsync(Guid familyId, UpsertBabyRequest request, CancellationToken ct)
+    private async Task<string?> ValidateBabyRequestAsync(Guid familyId, UpsertBabyRequest? request, CancellationToken ct)
     {
+        if (request is null)
+        {
+            return "Se requiere el cuerpo de la petición.";
+        }
+
         var nombre = (request.Nombre ?? "").Trim();
         if (nombre.Length is < 1 or > 60)
         {

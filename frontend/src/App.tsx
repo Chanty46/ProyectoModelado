@@ -44,6 +44,20 @@ export default function App() {
     setActiveProfileId(null);
     setInvitationResult(null);
     setErrorBanner(null);
+    try {
+      localStorage.removeItem("cuna_active_profile_id");
+    } catch {
+      // Ignorar excepciones de almacenamiento local
+    }
+  }, []);
+
+  const handleSelectProfile = useCallback((profileId: string) => {
+    setActiveProfileId(profileId);
+    try {
+      localStorage.setItem("cuna_active_profile_id", profileId);
+    } catch {
+      // Ignorar excepciones de almacenamiento local
+    }
   }, []);
 
   const refreshAccountContext = useCallback(async (token: string) => {
@@ -51,18 +65,37 @@ export default function App() {
       const ctx = await accountApi.getMe(token);
       setAccount(ctx);
       if (ctx.perfiles.length > 0) {
-        setActiveProfileId((prev) =>
-          prev && ctx.perfiles.some((p) => p.id === prev) ? prev : ctx.perfiles[0].id
-        );
+        let savedProfileId: string | null = null;
+        try {
+          savedProfileId = localStorage.getItem("cuna_active_profile_id");
+        } catch {
+          // Ignorar excepciones de almacenamiento local
+        }
+
+        setActiveProfileId((prev) => {
+          if (prev && ctx.perfiles.some((p) => p.id === prev)) {
+            return prev;
+          }
+          if (savedProfileId && ctx.perfiles.some((p) => p.id === savedProfileId)) {
+            return savedProfileId;
+          }
+          return ctx.perfiles[0].id;
+        });
       } else {
         setActiveProfileId(null);
       }
     } catch (err) {
       if (err instanceof ApiError) {
         setErrorBanner(err.message);
+        if (err.status === 401) {
+          clearLocalSessionState();
+          if (supabase) {
+            void supabase.auth.signOut();
+          }
+        }
       }
     }
-  }, []);
+  }, [clearLocalSessionState]);
 
   useEffect(() => {
     if (!supabase) {
@@ -374,7 +407,7 @@ export default function App() {
             <ProfileSelectorBar
               profiles={account.perfiles}
               activeProfileId={activeProfileId}
-              onSelectProfile={setActiveProfileId}
+              onSelectProfile={handleSelectProfile}
             />
 
             {/* M4 + M5: Gestión de Cunas, Emparejamiento Pico W (RF24–RF27), Bebé (RF28), Cuna en Vivo (M5) e Intercomunicador (RF11) */}

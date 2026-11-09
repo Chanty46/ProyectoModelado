@@ -62,6 +62,12 @@ export function CribAndDeviceManager({
   const [babyMedicalNotes, setBabyMedicalNotes] = useState("");
   const [babyCunaId, setBabyCunaId] = useState<string>("");
 
+  // Estados de carga para operaciones asíncronas
+  const [isClaiming, setIsClaiming] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [isUnlinking, setIsUnlinking] = useState(false);
+  const [isSavingBaby, setIsSavingBaby] = useState(false);
+
   const loadData = useCallback(async () => {
     try {
       const [cribList, babyList] = await Promise.all([
@@ -107,6 +113,7 @@ export function CribAndDeviceManager({
   async function handleClaimDevice(e: FormEvent) {
     e.preventDefault();
     onError(null);
+    setIsClaiming(true);
     try {
       const res = await accountApi.claimDevice(accessToken, {
         deviceId: claimDeviceId.trim(),
@@ -122,6 +129,8 @@ export function CribAndDeviceManager({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsClaiming(false);
     }
   }
 
@@ -137,6 +146,7 @@ export function CribAndDeviceManager({
   async function handleRenameCrib(e: FormEvent, cunaId: string) {
     e.preventDefault();
     onError(null);
+    setIsRenaming(true);
     try {
       await accountApi.renameCrib(accessToken, cunaId, renameValue.trim());
       setEditingCunaId(null);
@@ -146,12 +156,15 @@ export function CribAndDeviceManager({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsRenaming(false);
     }
   }
 
   async function handleUnlinkCrib(e: FormEvent, cunaId: string) {
     e.preventDefault();
     onError(null);
+    setIsUnlinking(true);
     try {
       await accountApi.unlinkCrib(accessToken, cunaId, unlinkConfirmText.trim());
       setUnlinkingCunaId(null);
@@ -161,6 +174,8 @@ export function CribAndDeviceManager({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsUnlinking(false);
     }
   }
 
@@ -172,6 +187,7 @@ export function CribAndDeviceManager({
       onError("Debes registrar una cuna primero para asociar al bebé (RF28).");
       return;
     }
+    setIsSavingBaby(true);
     try {
       const payload = {
         cunaId: targetCuna,
@@ -192,6 +208,8 @@ export function CribAndDeviceManager({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsSavingBaby(false);
     }
   }
 
@@ -325,9 +343,10 @@ export function CribAndDeviceManager({
                   />
                   <button
                     type="submit"
-                    className="rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700"
+                    disabled={isRenaming}
+                    className="rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
                   >
-                    Guardar nombre
+                    {isRenaming ? "Guardando..." : "Guardar nombre"}
                   </button>
                   <button
                     type="button"
@@ -362,10 +381,10 @@ export function CribAndDeviceManager({
                     />
                     <button
                       type="submit"
-                      disabled={unlinkConfirmText.trim().toUpperCase() !== "DESVINCULAR"}
-                      className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                      disabled={unlinkConfirmText.trim().toUpperCase() !== "DESVINCULAR" || isUnlinking}
+                      className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
                     >
-                      Confirmar desvinculación
+                      {isUnlinking ? "Desvinculando..." : "Confirmar desvinculación"}
                     </button>
                     <button
                       type="button"
@@ -550,9 +569,10 @@ export function CribAndDeviceManager({
 
             <button
               type="submit"
-              className="w-full rounded-xl bg-teal-600 px-4 py-2 text-xs font-medium text-white hover:bg-teal-700"
+              disabled={isClaiming}
+              className="w-full rounded-xl bg-teal-600 px-4 py-2 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
             >
-              Reclamar y generar token de dispositivo
+              {isClaiming ? "Reclamando dispositivo..." : "Reclamar y generar token de dispositivo"}
             </button>
           </form>
 
@@ -713,10 +733,15 @@ export function CribAndDeviceManager({
             <div className="flex items-center gap-2">
               <button
                 type="submit"
-                className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-medium text-white hover:bg-teal-700"
+                disabled={isSavingBaby}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
               >
                 <PlusCircle className="h-3.5 w-3.5" aria-hidden="true" />
-                {editingBabyId ? "Guardar cambios del bebé" : "Registrar bebé"}
+                {isSavingBaby
+                  ? "Guardando..."
+                  : editingBabyId
+                  ? "Guardar cambios del bebé"
+                  : "Registrar bebé"}
               </button>
               {editingBabyId && (
                 <button

@@ -300,6 +300,8 @@ EXECUTE FUNCTION public.calcular_sesion_alimentacion();
 -- -----------------------------------------------------------------------------
 
 CREATE INDEX idx_telemetria_cuna_ts ON public.telemetria (cuna_id, ts DESC);
+CREATE INDEX idx_telemetria_cuna_seq ON public.telemetria (cuna_id, seq DESC)
+    WHERE seq IS NOT NULL;
 CREATE UNIQUE INDEX idx_telemetria_dispositivo_seq ON public.telemetria (dispositivo_id, seq)
     WHERE dispositivo_id IS NOT NULL AND seq IS NOT NULL;
 CREATE INDEX idx_usuarios_family_id ON public.usuarios (family_id);
@@ -310,6 +312,7 @@ CREATE INDEX idx_bebes_family_id ON public.bebes (family_id);
 CREATE INDEX idx_eventos_alertas_cuna_ts ON public.eventos_alertas (cuna_id, ts DESC);
 CREATE INDEX idx_sesiones_sueno_bebe_inicio ON public.sesiones_sueno (bebe_id, inicio DESC);
 CREATE INDEX idx_sesiones_alimentacion_bebe_inicio ON public.sesiones_alimentacion (bebe_id, inicio DESC);
+CREATE INDEX idx_uso_juguetes_cuna_inicio ON public.uso_juguetes (cuna_id, inicio DESC);
 CREATE INDEX idx_bitacora_family_ts ON public.bitacora (family_id, ts DESC);
 CREATE INDEX idx_bitacora_seguridad_family_ts ON public.bitacora_seguridad (family_id, ts DESC);
 

@@ -1109,32 +1109,41 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
     public async Task<IReadOnlyList<TelemetryRecord>> ListTelemetryForCribAsync(Guid cunaId, CancellationToken ct)
     {
         var rows = await _http.GetFromJsonAsync<List<TelemetryDto>>(
-            $"telemetria?cuna_id=eq.{cunaId}&order=seq.asc&limit=200",
+            $"telemetria?cuna_id=eq.{cunaId}&order=seq.desc&limit=200",
             JsonOptions,
             ct) ?? [];
-        return rows.Select(r => new TelemetryRecord(
-            r.CunaId, r.DispositivoId ?? Guid.Empty, r.Ts, r.MasaKg, r.IndiceMovimiento,
-            r.TempC, r.Humedad, r.MasaBiberonG, r.TempBiberonC, r.BateriaPct, r.Seq ?? 0)).ToList();
+        return rows
+            .OrderBy(r => r.Seq ?? 0)
+            .Select(r => new TelemetryRecord(
+                r.CunaId, r.DispositivoId ?? Guid.Empty, r.Ts, r.MasaKg, r.IndiceMovimiento,
+                r.TempC, r.Humedad, r.MasaBiberonG, r.TempBiberonC, r.BateriaPct, r.Seq ?? 0))
+            .ToList();
     }
 
     public async Task<IReadOnlyList<EventAlertRecord>> ListAlertsForCribAsync(Guid cunaId, CancellationToken ct)
     {
         var rows = await _http.GetFromJsonAsync<List<EventAlertDto>>(
-            $"eventos_alertas?cuna_id=eq.{cunaId}&order=ts.asc&limit=200",
+            $"eventos_alertas?cuna_id=eq.{cunaId}&order=ts.desc&limit=200",
             JsonOptions,
             ct) ?? [];
-        return rows.Select(r => new EventAlertRecord(
-            r.Id, r.CunaId, r.DispositivoId ?? Guid.Empty, r.Tipo, r.Severidad, r.Mensaje, null, r.Ts)).ToList();
+        return rows
+            .OrderBy(r => r.Ts)
+            .Select(r => new EventAlertRecord(
+                r.Id, r.CunaId, r.DispositivoId ?? Guid.Empty, r.Tipo, r.Severidad, r.Mensaje, null, r.Ts))
+            .ToList();
     }
 
     public async Task<IReadOnlyList<ToyUsageRecord>> ListToyUsageForCribAsync(Guid cunaId, CancellationToken ct)
     {
         var rows = await _http.GetFromJsonAsync<List<ToyUsageDto>>(
-            $"uso_juguetes?cuna_id=eq.{cunaId}&order=inicio.asc&limit=200",
+            $"uso_juguetes?cuna_id=eq.{cunaId}&order=inicio.desc&limit=200",
             JsonOptions,
             ct) ?? [];
-        return rows.Select(r => new ToyUsageRecord(
-            r.Id, r.CunaId, r.Tipo, r.PerfilId, r.Inicio, r.Duracion, r.Aciertos, r.Patron, r.Velocidad)).ToList();
+        return rows
+            .OrderBy(r => r.Inicio)
+            .Select(r => new ToyUsageRecord(
+                r.Id, r.CunaId, r.Tipo, r.PerfilId, r.Inicio, r.Duracion, r.Aciertos, r.Patron, r.Velocidad))
+            .ToList();
     }
 
     public async Task<ClaimableDeviceRecord?> GetClaimableDeviceAsync(string deviceId, CancellationToken ct)

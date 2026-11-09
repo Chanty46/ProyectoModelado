@@ -26,6 +26,9 @@ export function TelegramAndRemindersPanel({
   const [reminder, setReminder] = useState<FeedingReminderRecord | null>(null);
   const [intervalHours, setIntervalHours] = useState<number>(3);
   const [reminderActive, setReminderActive] = useState<boolean>(true);
+  const [isGeneratingCode, setIsGeneratingCode] = useState(false);
+  const [isUnlinking, setIsUnlinking] = useState(false);
+  const [isSavingReminder, setIsSavingReminder] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -50,6 +53,7 @@ export function TelegramAndRemindersPanel({
 
   async function handleGenerateCode() {
     onError(null);
+    setIsGeneratingCode(true);
     try {
       const res = await accountApi.generateTelegramLinkCode(accessToken);
       setGeneratedCode(res);
@@ -59,6 +63,8 @@ export function TelegramAndRemindersPanel({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsGeneratingCode(false);
     }
   }
 
@@ -72,6 +78,7 @@ export function TelegramAndRemindersPanel({
 
   async function handleUnlinkTelegram() {
     onError(null);
+    setIsUnlinking(true);
     try {
       await accountApi.unlinkTelegram(accessToken);
       setGeneratedCode(null);
@@ -80,12 +87,15 @@ export function TelegramAndRemindersPanel({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsUnlinking(false);
     }
   }
 
   async function handleSaveReminder(e: FormEvent) {
     e.preventDefault();
     onError(null);
+    setIsSavingReminder(true);
     try {
       const updated = await accountApi.updateFeedingReminder(accessToken, {
         intervaloHoras: intervalHours,
@@ -97,6 +107,8 @@ export function TelegramAndRemindersPanel({
       if (err instanceof ApiError) {
         onError(err.message);
       }
+    } finally {
+      setIsSavingReminder(false);
     }
   }
 
@@ -145,20 +157,24 @@ export function TelegramAndRemindersPanel({
             </div>
             <button
               type="button"
+              disabled={isUnlinking}
               onClick={handleUnlinkTelegram}
-              className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+              className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
             >
               <Unlink className="h-3.5 w-3.5" aria-hidden="true" />
-              Desvincular
+              {isUnlinking ? "Desvinculando..." : "Desvincular"}
             </button>
           </div>
         ) : (
           <button
             type="button"
+            disabled={isGeneratingCode}
             onClick={handleGenerateCode}
-            className="w-full rounded-xl border border-teal-600 bg-teal-50 px-4 py-2 text-xs font-medium text-teal-800 hover:bg-teal-100"
+            className="w-full rounded-xl border border-teal-600 bg-teal-50 px-4 py-2 text-xs font-medium text-teal-800 hover:bg-teal-100 disabled:opacity-50 transition-colors"
           >
-            Generar código de vinculación de 1 uso (10 min)
+            {isGeneratingCode
+              ? "Generando código..."
+              : "Generar código de vinculación de 1 uso (10 min)"}
           </button>
         )}
 
@@ -253,9 +269,10 @@ export function TelegramAndRemindersPanel({
 
           <button
             type="submit"
-            className="w-full rounded-xl bg-teal-600 px-4 py-2 text-xs font-medium text-white hover:bg-teal-700"
+            disabled={isSavingReminder}
+            className="w-full rounded-xl bg-teal-600 px-4 py-2 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
           >
-            Guardar configuración de recordatorio
+            {isSavingReminder ? "Guardando configuración..." : "Guardar configuración de recordatorio"}
           </button>
         </form>
       </section>

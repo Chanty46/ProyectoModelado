@@ -110,10 +110,15 @@ public sealed class FamilyAccountService
 
     public async Task<ServiceResult<FamilyRecord>> UpdateFamilyNameAsync(
         AuthenticatedIdentity identity,
-        UpdateFamilyRequest request,
+        UpdateFamilyRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<FamilyRecord>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         var (membership, forbidden) = await RequirePrincipalAsync(identity, "actualizar_familia", clientIp, ct);
         if (forbidden is not null || membership is null)
         {
@@ -134,10 +139,15 @@ public sealed class FamilyAccountService
 
     public async Task<ServiceResult<CaregiverProfileRecord>> CreateProfileAsync(
         AuthenticatedIdentity identity,
-        UpsertCaregiverProfileRequest request,
+        UpsertCaregiverProfileRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<CaregiverProfileRecord>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         var (membership, forbidden) = await RequirePrincipalAsync(identity, "crear_perfil_cuidador", clientIp, ct);
         if (forbidden is not null || membership is null)
         {
@@ -171,10 +181,15 @@ public sealed class FamilyAccountService
     public async Task<ServiceResult<CaregiverProfileRecord>> UpdateProfileAsync(
         AuthenticatedIdentity identity,
         Guid profileId,
-        UpsertCaregiverProfileRequest request,
+        UpsertCaregiverProfileRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<CaregiverProfileRecord>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         var (membership, forbidden) = await RequirePrincipalAsync(identity, "editar_perfil_cuidador", clientIp, ct);
         if (forbidden is not null || membership is null)
         {
@@ -251,10 +266,15 @@ public sealed class FamilyAccountService
 
     public async Task<ServiceResult<AccountContextResponse>> AcceptInvitationAsync(
         AuthenticatedIdentity identity,
-        AcceptInvitationRequest request,
+        AcceptInvitationRequest? request,
         string? clientIp,
         CancellationToken ct)
     {
+        if (request is null)
+        {
+            return ServiceResult<AccountContextResponse>.BadRequest("Se requiere el cuerpo de la petición.");
+        }
+
         var rawToken = (request.Token ?? "").Trim();
         if (rawToken.Length < 16 || rawToken.Length > 128)
         {

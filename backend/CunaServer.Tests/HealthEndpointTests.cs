@@ -26,5 +26,6 @@ public class HealthEndpointTests : IClassFixture<WebApplicationFactory<Program>>
         using var doc = JsonDocument.Parse(body);
         Assert.Equal("ok", doc.RootElement.GetProperty("status").GetString());
         Assert.Equal("CunaServer", doc.RootElement.GetProperty("service").GetString());
+        Assert.True(doc.RootElement.TryGetProperty("tcpPort", out var portProp) && portProp.GetInt32() > 0);
     }
 }
