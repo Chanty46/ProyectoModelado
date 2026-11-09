@@ -30,6 +30,76 @@ public sealed record RegisteredDevice(
     DateTimeOffset? UltimoHeartbeat,
     string? FwVersion);
 
+public sealed record ClaimableDeviceRecord(
+    Guid Id,
+    string DeviceId,
+    Guid? CunaId,
+    Guid? FamilyId,
+    string Tipo,
+    string? HashReclamo,
+    DateTimeOffset? ReclamoExpiraEn,
+    bool ReclamoUsado,
+    int IntentosReclamo,
+    string? HashToken,
+    string Estado,
+    int? BateriaPct,
+    string? FwVersion);
+
+public sealed record CribRecord(
+    Guid Id,
+    Guid FamilyId,
+    string Nombre,
+    string EstadoConexion,
+    string ModoOperacion,
+    DateTimeOffset? ModoAtencionExpiraEn,
+    bool LuzEncendida,
+    int LuzNivel,
+    decimal EscalaMasa,
+    DateTimeOffset? UltimoHeartbeat,
+    DateTimeOffset CreadoEn);
+
+public sealed record BabyRecord(
+    Guid Id,
+    Guid FamilyId,
+    Guid? CunaId,
+    string Nombre,
+    DateOnly FechaNacimiento,
+    string? Notas,
+    DateTimeOffset CreadoEn);
+
+public sealed record CribSummaryResponse(
+    CribRecord Cuna,
+    IReadOnlyList<ClaimableDeviceRecord> Dispositivos,
+    BabyRecord? Bebe);
+
+public sealed record OpenPairingWindowResponse(
+    DateTimeOffset ExpiraEn,
+    int VentanaMinutos);
+
+public sealed record ClaimDeviceRequest(
+    string DeviceId,
+    string CodigoReclamo,
+    Guid? CunaId,
+    string? NombreCuna);
+
+public sealed record ClaimDeviceResponse(
+    Guid DeviceRowId,
+    string DeviceId,
+    string Tipo,
+    Guid CunaId,
+    string NombreCuna,
+    string DeviceTokenOnce);
+
+public sealed record RenameCribRequest(string Nombre);
+
+public sealed record UnlinkCribRequest(bool ConfirmacionExplicita, string TextoConfirmacion);
+
+public sealed record UpsertBabyRequest(
+    Guid CunaId,
+    string Nombre,
+    DateOnly FechaNacimiento,
+    string? Notas);
+
 public sealed record CribConfig(
     Guid CunaId,
     Guid FamilyId,

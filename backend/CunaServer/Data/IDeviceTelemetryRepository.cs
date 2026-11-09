@@ -21,11 +21,34 @@ public interface IDeviceTelemetryRepository
     Task<IReadOnlyList<TelemetryRecord>> ListTelemetryForCribAsync(Guid cunaId, CancellationToken ct);
     Task<IReadOnlyList<EventAlertRecord>> ListAlertsForCribAsync(Guid cunaId, CancellationToken ct);
     Task<IReadOnlyList<ToyUsageRecord>> ListToyUsageForCribAsync(Guid cunaId, CancellationToken ct);
+
+    // M4: Emparejamiento, cunas y perfil del bebé (RF24–RF28)
+    Task<ClaimableDeviceRecord?> GetClaimableDeviceAsync(string deviceId, CancellationToken ct);
+    Task IncrementClaimAttemptAsync(Guid deviceRowId, CancellationToken ct);
+    Task<CribRecord> CreateCribWithDefaultsAsync(Guid familyId, string nombre, CancellationToken ct);
+    Task<CribRecord?> GetCribByIdAsync(Guid cunaId, CancellationToken ct);
+    Task<IReadOnlyList<CribRecord>> ListCribsByFamilyAsync(Guid familyId, CancellationToken ct);
+    Task<CribRecord?> RenameCribAsync(Guid familyId, Guid cunaId, string newName, CancellationToken ct);
+    Task<ClaimableDeviceRecord> BindClaimedDeviceAsync(
+        Guid deviceRowId,
+        Guid cunaId,
+        Guid familyId,
+        string hashToken,
+        CancellationToken ct);
+    Task<IReadOnlyList<ClaimableDeviceRecord>> ListDevicesByCribAsync(Guid cunaId, CancellationToken ct);
+    Task<IReadOnlyList<string>> UnlinkCribAndRevokeDevicesAsync(Guid familyId, Guid cunaId, CancellationToken ct);
+
+    Task<IReadOnlyList<BabyRecord>> ListBabiesByFamilyAsync(Guid familyId, CancellationToken ct);
+    Task<BabyRecord> CreateBabyAsync(Guid familyId, Guid cunaId, string nombre, DateOnly fechaNacimiento, string? notas, CancellationToken ct);
+    Task<BabyRecord?> UpdateBabyAsync(Guid familyId, Guid bebeId, Guid cunaId, string nombre, DateOnly fechaNacimiento, string? notas, CancellationToken ct);
 }
 
 public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryRepository
 {
     private readonly ConcurrentDictionary<string, RegisteredDevice> _devicesByDeviceId = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ClaimableDeviceRecord> _claimableDevices = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<Guid, CribRecord> _cribs = new();
+    private readonly ConcurrentDictionary<Guid, BabyRecord> _babies = new();
     private readonly ConcurrentDictionary<Guid, CribConfig> _cribConfigs = new();
     private readonly ConcurrentQueue<TelemetryRecord> _telemetry = new();
     private readonly ConcurrentQueue<EventAlertRecord> _alerts = new();
@@ -42,6 +65,20 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
     {
         var familyId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
         var cunaId = Guid.Parse("aaaaaaaa-c001-4000-8000-000000000001");
+        var now = DateTimeOffset.UtcNow;
+
+        _cribs[cunaId] = new CribRecord(
+            cunaId,
+            familyId,
+            "Cuna Habitación A",
+            "en_linea",
+            "monitoreo",
+            null,
+            false,
+            0,
+            0.20m,
+            now,
+            now);
 
         _cribConfigs[cunaId] = new CribConfig(
             cunaId,
@@ -55,30 +92,77 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
             MovimientoAlertaActiva: true,
             RuidoMasaPiso: 0.010m);
 
-        var demoDevices = new (Guid Id, string DeviceId, string Tipo, string RawDemoToken)[]
+        var demoDevices = new (Guid Id, string DeviceId, string Tipo, string RawDemoToken, string RawClaimCode)[]
         {
-            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000001"), "sim-central-a", DeviceTypes.Central, "TOKEN-CENTRAL-A-DEMO-000000000000"),
-            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000002"), "sim-colchon-a", DeviceTypes.Colchon, "TOKEN-COLCHON-A-DEMO-000000000000"),
-            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000003"), "sim-movil-a", DeviceTypes.Movil, "TOKEN-MOVIL-A-DEMO-000000000000"),
-            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000004"), "sim-biberon-a", DeviceTypes.Biberon, "TOKEN-BIBERON-A-DEMO-000000000000"),
-            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000005"), "sim-juguete-a", DeviceTypes.Juguete, "TOKEN-JUGUETE-A-DEMO-000000000000")
+            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000001"), "sim-central-a", DeviceTypes.Central, "TOKEN-CENTRAL-A-DEMO-000000000000", "CLAIM-CENTRAL-A-DEMO"),
+            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000002"), "sim-colchon-a", DeviceTypes.Colchon, "TOKEN-COLCHON-A-DEMO-000000000000", "CLAIM-COLCHON-A-DEMO"),
+            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000003"), "sim-movil-a", DeviceTypes.Movil, "TOKEN-MOVIL-A-DEMO-000000000000", "CLAIM-MOVIL-A-DEMO"),
+            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000004"), "sim-biberon-a", DeviceTypes.Biberon, "TOKEN-BIBERON-A-DEMO-000000000000", "CLAIM-BIBERON-A-DEMO"),
+            (Guid.Parse("aaaaaaaa-d001-4000-8000-000000000005"), "sim-juguete-a", DeviceTypes.Juguete, "TOKEN-JUGUETE-A-DEMO-000000000000", "CLAIM-JUGUETE-A-DEMO")
         };
 
         foreach (var d in demoDevices)
         {
+            var tokenHash = CryptoTokenHelper.ComputeSha256Hex(d.RawDemoToken);
+            var claimHash = CryptoTokenHelper.ComputeSha256Hex(d.RawClaimCode);
             _devicesByDeviceId[d.DeviceId] = new RegisteredDevice(
                 d.Id,
                 d.DeviceId,
                 cunaId,
                 familyId,
                 d.Tipo,
-                CryptoTokenHelper.ComputeSha256Hex(d.RawDemoToken),
+                tokenHash,
                 "vinculado",
                 null,
                 0,
                 null,
                 "1.0.0-sim");
+
+            _claimableDevices[d.DeviceId] = new ClaimableDeviceRecord(
+                d.Id,
+                d.DeviceId,
+                cunaId,
+                familyId,
+                d.Tipo,
+                claimHash,
+                null,
+                true,
+                0,
+                tokenHash,
+                "vinculado",
+                null,
+                "1.0.0-sim");
         }
+
+        // Dispositivos nuevos de fábrica (sin dueño) listos para pruebas de emparejamiento RF24/RF25
+        SeedFactoryUnclaimedDevice("pico-central-nuevo", DeviceTypes.Central, "RECLAMO-CENTRAL-1001");
+        SeedFactoryUnclaimedDevice("pico-colchon-nuevo", DeviceTypes.Colchon, "RECLAMO-COLCHON-1002");
+        SeedFactoryUnclaimedDevice("pico-movil-nuevo", DeviceTypes.Movil, "RECLAMO-MOVIL-1003");
+        SeedFactoryUnclaimedDevice("pico-biberon-nuevo", DeviceTypes.Biberon, "RECLAMO-BIBERON-1004");
+        SeedFactoryUnclaimedDevice("pico-juguete-nuevo", DeviceTypes.Juguete, "RECLAMO-JUGUETE-1005");
+    }
+
+    public void SeedFactoryUnclaimedDevice(
+        string deviceId,
+        string tipo,
+        string rawClaimCode,
+        DateTimeOffset? reclamoExpiraEn = null)
+    {
+        var row = new ClaimableDeviceRecord(
+            Guid.NewGuid(),
+            deviceId,
+            null,
+            null,
+            tipo,
+            CryptoTokenHelper.ComputeSha256Hex(rawClaimCode),
+            reclamoExpiraEn ?? DateTimeOffset.UtcNow.AddHours(24),
+            false,
+            0,
+            null,
+            "sin_dueno",
+            null,
+            "1.0.0");
+        _claimableDevices[deviceId] = row;
     }
 
     public void RegisterOrUpdateDevice(RegisteredDevice device)
@@ -211,6 +295,234 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
     {
         var list = _toyUsage.Where(u => u.CunaId == cunaId).OrderBy(u => u.Inicio).ToList();
         return Task.FromResult<IReadOnlyList<ToyUsageRecord>>(list);
+    }
+
+    public Task<ClaimableDeviceRecord?> GetClaimableDeviceAsync(string deviceId, CancellationToken ct)
+    {
+        _claimableDevices.TryGetValue(deviceId, out var dev);
+        return Task.FromResult(dev);
+    }
+
+    public Task IncrementClaimAttemptAsync(Guid deviceRowId, CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            var entry = _claimableDevices.Values.FirstOrDefault(d => d.Id == deviceRowId);
+            if (entry is not null && entry.IntentosReclamo < 5)
+            {
+                _claimableDevices[entry.DeviceId] = entry with { IntentosReclamo = entry.IntentosReclamo + 1 };
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<CribRecord> CreateCribWithDefaultsAsync(Guid familyId, string nombre, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var crib = new CribRecord(
+            Guid.NewGuid(),
+            familyId,
+            nombre,
+            "desconectada",
+            "monitoreo",
+            null,
+            false,
+            0,
+            0.20m,
+            null,
+            now);
+
+        _cribs[crib.Id] = crib;
+        _cribConfigs[crib.Id] = new CribConfig(
+            crib.Id,
+            familyId,
+            0.20m,
+            18.0m,
+            26.0m,
+            40.0m,
+            60.0m,
+            0.150m,
+            true,
+            0.010m);
+
+        return Task.FromResult(crib);
+    }
+
+    public Task<CribRecord?> GetCribByIdAsync(Guid cunaId, CancellationToken ct)
+    {
+        _cribs.TryGetValue(cunaId, out var crib);
+        return Task.FromResult(crib);
+    }
+
+    public Task<IReadOnlyList<CribRecord>> ListCribsByFamilyAsync(Guid familyId, CancellationToken ct)
+    {
+        var list = _cribs.Values
+            .Where(c => c.FamilyId == familyId)
+            .OrderBy(c => c.CreadoEn)
+            .ToList();
+        return Task.FromResult<IReadOnlyList<CribRecord>>(list);
+    }
+
+    public Task<CribRecord?> RenameCribAsync(Guid familyId, Guid cunaId, string newName, CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            if (!_cribs.TryGetValue(cunaId, out var crib) || crib.FamilyId != familyId)
+            {
+                return Task.FromResult<CribRecord?>(null);
+            }
+
+            var updated = crib with { Nombre = newName };
+            _cribs[cunaId] = updated;
+            return Task.FromResult<CribRecord?>(updated);
+        }
+    }
+
+    public Task<ClaimableDeviceRecord> BindClaimedDeviceAsync(
+        Guid deviceRowId,
+        Guid cunaId,
+        Guid familyId,
+        string hashToken,
+        CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            var current = _claimableDevices.Values.First(d => d.Id == deviceRowId);
+            var updatedClaimable = current with
+            {
+                CunaId = cunaId,
+                FamilyId = familyId,
+                ReclamoUsado = true,
+                HashToken = hashToken,
+                Estado = "vinculado"
+            };
+            _claimableDevices[current.DeviceId] = updatedClaimable;
+
+            _devicesByDeviceId[current.DeviceId] = new RegisteredDevice(
+                current.Id,
+                current.DeviceId,
+                cunaId,
+                familyId,
+                current.Tipo,
+                hashToken,
+                "vinculado",
+                current.BateriaPct,
+                0,
+                null,
+                current.FwVersion);
+
+            return Task.FromResult(updatedClaimable);
+        }
+    }
+
+    public Task<IReadOnlyList<ClaimableDeviceRecord>> ListDevicesByCribAsync(Guid cunaId, CancellationToken ct)
+    {
+        var list = _claimableDevices.Values
+            .Where(d => d.CunaId == cunaId && d.Estado != "revocado")
+            .OrderBy(d => d.Tipo)
+            .ToList();
+        return Task.FromResult<IReadOnlyList<ClaimableDeviceRecord>>(list);
+    }
+
+    public Task<IReadOnlyList<string>> UnlinkCribAndRevokeDevicesAsync(Guid familyId, Guid cunaId, CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            if (!_cribs.TryGetValue(cunaId, out var crib) || crib.FamilyId != familyId)
+            {
+                return Task.FromResult<IReadOnlyList<string>>([]);
+            }
+
+            var revokedIds = new List<string>();
+            foreach (var dev in _claimableDevices.Values.Where(d => d.CunaId == cunaId).ToList())
+            {
+                revokedIds.Add(dev.DeviceId);
+                _claimableDevices[dev.DeviceId] = dev with
+                {
+                    CunaId = null,
+                    FamilyId = null,
+                    HashToken = null,
+                    Estado = "revocado"
+                };
+
+                if (_devicesByDeviceId.TryGetValue(dev.DeviceId, out var reg))
+                {
+                    _devicesByDeviceId[dev.DeviceId] = reg with
+                    {
+                        HashToken = "",
+                        Estado = "revocado"
+                    };
+                }
+            }
+
+            // Conservar el perfil e historial del bebé desasociando cuna_id (RF27)
+            foreach (var baby in _babies.Values.Where(b => b.CunaId == cunaId).ToList())
+            {
+                _babies[baby.Id] = baby with { CunaId = null };
+            }
+
+            _cribs.TryRemove(cunaId, out _);
+            _cribConfigs.TryRemove(cunaId, out _);
+
+            return Task.FromResult<IReadOnlyList<string>>(revokedIds);
+        }
+    }
+
+    public Task<IReadOnlyList<BabyRecord>> ListBabiesByFamilyAsync(Guid familyId, CancellationToken ct)
+    {
+        var list = _babies.Values
+            .Where(b => b.FamilyId == familyId)
+            .OrderBy(b => b.CreadoEn)
+            .ToList();
+        return Task.FromResult<IReadOnlyList<BabyRecord>>(list);
+    }
+
+    public Task<BabyRecord> CreateBabyAsync(
+        Guid familyId,
+        Guid cunaId,
+        string nombre,
+        DateOnly fechaNacimiento,
+        string? notas,
+        CancellationToken ct)
+    {
+        var baby = new BabyRecord(
+            Guid.NewGuid(),
+            familyId,
+            cunaId,
+            nombre,
+            fechaNacimiento,
+            notas,
+            DateTimeOffset.UtcNow);
+        _babies[baby.Id] = baby;
+        return Task.FromResult(baby);
+    }
+
+    public Task<BabyRecord?> UpdateBabyAsync(
+        Guid familyId,
+        Guid bebeId,
+        Guid cunaId,
+        string nombre,
+        DateOnly fechaNacimiento,
+        string? notas,
+        CancellationToken ct)
+    {
+        lock (_seqLock)
+        {
+            if (!_babies.TryGetValue(bebeId, out var current) || current.FamilyId != familyId)
+            {
+                return Task.FromResult<BabyRecord?>(null);
+            }
+
+            var updated = current with
+            {
+                CunaId = cunaId,
+                Nombre = nombre,
+                FechaNacimiento = fechaNacimiento,
+                Notas = notas
+            };
+            _babies[bebeId] = updated;
+            return Task.FromResult<BabyRecord?>(updated);
+        }
     }
 }
 
@@ -500,6 +812,240 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
             r.Id, r.CunaId, r.Tipo, r.PerfilId, r.Inicio, r.Duracion, r.Aciertos, r.Patron, r.Velocidad)).ToList();
     }
 
+    public async Task<ClaimableDeviceRecord?> GetClaimableDeviceAsync(string deviceId, CancellationToken ct)
+    {
+        var encodedId = Uri.EscapeDataString(deviceId);
+        var rows = await _http.GetFromJsonAsync<List<ClaimableDeviceRowDto>>(
+            $"dispositivos?device_id=eq.{encodedId}&select=id,device_id,cuna_id,tipo,hash_reclamo,reclamo_expira_en,reclamo_usado,intentos_reclamo,hash_token,estado,bateria_pct,fw_version&limit=1",
+            JsonOptions,
+            ct);
+        var d = rows?.FirstOrDefault();
+        if (d is null)
+        {
+            return null;
+        }
+
+        Guid? familyId = null;
+        if (d.CunaId.HasValue)
+        {
+            var cuna = await GetCribByIdAsync(d.CunaId.Value, ct);
+            familyId = cuna?.FamilyId;
+        }
+
+        return new ClaimableDeviceRecord(
+            d.Id, d.DeviceId, d.CunaId, familyId, d.Tipo, d.HashReclamo, d.ReclamoExpiraEn,
+            d.ReclamoUsado, d.IntentosReclamo, d.HashToken, d.Estado, d.BateriaPct, d.FwVersion);
+    }
+
+    public async Task IncrementClaimAttemptAsync(Guid deviceRowId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<ClaimableDeviceRowDto>>(
+            $"dispositivos?id=eq.{deviceRowId}&select=id,device_id,cuna_id,tipo,hash_reclamo,reclamo_expira_en,reclamo_usado,intentos_reclamo,hash_token,estado,bateria_pct,fw_version&limit=1",
+            JsonOptions,
+            ct);
+        var current = rows?.FirstOrDefault();
+        if (current is null || current.IntentosReclamo >= 5)
+        {
+            return;
+        }
+
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"dispositivos?id=eq.{deviceRowId}");
+        req.Content = JsonContent.Create(new { intentos_reclamo = current.IntentosReclamo + 1 }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+    }
+
+    public async Task<CribRecord> CreateCribWithDefaultsAsync(Guid familyId, string nombre, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, "cunas");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            family_id = familyId,
+            nombre,
+            estado_conexion = "desconectada",
+            modo_operacion = "monitoreo",
+            escala_masa = 0.20m
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var created = await res.Content.ReadFromJsonAsync<List<CribDto>>(JsonOptions, ct);
+        var crib = created!.Single().ToModel();
+
+        using var umbReq = new HttpRequestMessage(HttpMethod.Post, "umbrales");
+        umbReq.Content = JsonContent.Create(new
+        {
+            cuna_id = crib.Id,
+            temp_min = 18.0m,
+            temp_max = 26.0m,
+            hum_min = 40.0m,
+            hum_max = 60.0m,
+            movimiento_umbral = 0.150m,
+            movimiento_alerta_activa = true,
+            ruido_masa_piso = 0.010m
+        }, options: JsonOptions);
+        using var umbRes = await _http.SendAsync(umbReq, ct);
+        umbRes.EnsureSuccessStatusCode();
+
+        return crib;
+    }
+
+    public async Task<CribRecord?> GetCribByIdAsync(Guid cunaId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<CribDto>>(
+            $"cunas?id=eq.{cunaId}&select=id,family_id,nombre,estado_conexion,modo_operacion,modo_atencion_expira_en,luz_encendida,luz_nivel,escala_masa,ultimo_heartbeat,creado_en&limit=1",
+            JsonOptions,
+            ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<IReadOnlyList<CribRecord>> ListCribsByFamilyAsync(Guid familyId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<CribDto>>(
+            $"cunas?family_id=eq.{familyId}&select=id,family_id,nombre,estado_conexion,modo_operacion,modo_atencion_expira_en,luz_encendida,luz_nivel,escala_masa,ultimo_heartbeat,creado_en&order=creado_en.asc",
+            JsonOptions,
+            ct) ?? [];
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task<CribRecord?> RenameCribAsync(Guid familyId, Guid cunaId, string newName, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"cunas?id=eq.{cunaId}&family_id=eq.{familyId}");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new { nombre = newName }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<CribDto>>(JsonOptions, ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<ClaimableDeviceRecord> BindClaimedDeviceAsync(
+        Guid deviceRowId,
+        Guid cunaId,
+        Guid familyId,
+        string hashToken,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"dispositivos?id=eq.{deviceRowId}");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            cuna_id = cunaId,
+            reclamo_usado = true,
+            hash_token = hashToken,
+            estado = "vinculado"
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<ClaimableDeviceRowDto>>(JsonOptions, ct);
+        var d = rows!.Single();
+        return new ClaimableDeviceRecord(
+            d.Id, d.DeviceId, d.CunaId, familyId, d.Tipo, d.HashReclamo, d.ReclamoExpiraEn,
+            d.ReclamoUsado, d.IntentosReclamo, d.HashToken, d.Estado, d.BateriaPct, d.FwVersion);
+    }
+
+    public async Task<IReadOnlyList<ClaimableDeviceRecord>> ListDevicesByCribAsync(Guid cunaId, CancellationToken ct)
+    {
+        var crib = await GetCribByIdAsync(cunaId, ct);
+        var rows = await _http.GetFromJsonAsync<List<ClaimableDeviceRowDto>>(
+            $"dispositivos?cuna_id=eq.{cunaId}&select=id,device_id,cuna_id,tipo,hash_reclamo,reclamo_expira_en,reclamo_usado,intentos_reclamo,hash_token,estado,bateria_pct,fw_version&order=tipo.asc",
+            JsonOptions,
+            ct) ?? [];
+        return rows.Select(d => new ClaimableDeviceRecord(
+            d.Id, d.DeviceId, d.CunaId, crib?.FamilyId, d.Tipo, d.HashReclamo, d.ReclamoExpiraEn,
+            d.ReclamoUsado, d.IntentosReclamo, d.HashToken, d.Estado, d.BateriaPct, d.FwVersion)).ToList();
+    }
+
+    public async Task<IReadOnlyList<string>> UnlinkCribAndRevokeDevicesAsync(Guid familyId, Guid cunaId, CancellationToken ct)
+    {
+        var crib = await GetCribByIdAsync(cunaId, ct);
+        if (crib is null || crib.FamilyId != familyId)
+        {
+            return [];
+        }
+
+        var devices = await ListDevicesByCribAsync(cunaId, ct);
+        var deviceIds = devices.Select(d => d.DeviceId).ToList();
+
+        using var revReq = new HttpRequestMessage(HttpMethod.Patch, $"dispositivos?cuna_id=eq.{cunaId}");
+        revReq.Content = JsonContent.Create(new
+        {
+            cuna_id = (Guid?)null,
+            hash_token = (string?)null,
+            estado = "revocado"
+        }, options: JsonOptions);
+        using var revRes = await _http.SendAsync(revReq, ct);
+        revRes.EnsureSuccessStatusCode();
+
+        using var babyReq = new HttpRequestMessage(HttpMethod.Patch, $"bebes?cuna_id=eq.{cunaId}&family_id=eq.{familyId}");
+        babyReq.Content = JsonContent.Create(new { cuna_id = (Guid?)null }, options: JsonOptions);
+        using var babyRes = await _http.SendAsync(babyReq, ct);
+        babyRes.EnsureSuccessStatusCode();
+
+        using var delReq = new HttpRequestMessage(HttpMethod.Delete, $"cunas?id=eq.{cunaId}&family_id=eq.{familyId}");
+        using var delRes = await _http.SendAsync(delReq, ct);
+        delRes.EnsureSuccessStatusCode();
+
+        return deviceIds;
+    }
+
+    public async Task<IReadOnlyList<BabyRecord>> ListBabiesByFamilyAsync(Guid familyId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<BabyDto>>(
+            $"bebes?family_id=eq.{familyId}&select=id,family_id,cuna_id,nombre,fecha_nacimiento,notas,creado_en&order=creado_en.asc",
+            JsonOptions,
+            ct) ?? [];
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task<BabyRecord> CreateBabyAsync(
+        Guid familyId,
+        Guid cunaId,
+        string nombre,
+        DateOnly fechaNacimiento,
+        string? notas,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, "bebes");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            family_id = familyId,
+            cuna_id = cunaId,
+            nombre,
+            fecha_nacimiento = fechaNacimiento,
+            notas
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<BabyDto>>(JsonOptions, ct);
+        return rows!.Single().ToModel();
+    }
+
+    public async Task<BabyRecord?> UpdateBabyAsync(
+        Guid familyId,
+        Guid bebeId,
+        Guid cunaId,
+        string nombre,
+        DateOnly fechaNacimiento,
+        string? notas,
+        CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"bebes?id=eq.{bebeId}&family_id=eq.{familyId}");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            cuna_id = cunaId,
+            nombre,
+            fecha_nacimiento = fechaNacimiento,
+            notas
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var rows = await res.Content.ReadFromJsonAsync<List<BabyDto>>(JsonOptions, ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
     private sealed record DeviceRowDto(
         Guid Id,
         string DeviceId,
@@ -555,4 +1101,48 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
         int? Aciertos,
         string? Patron,
         string? Velocidad);
+
+    private sealed record ClaimableDeviceRowDto(
+        Guid Id,
+        string DeviceId,
+        Guid? CunaId,
+        string Tipo,
+        string? HashReclamo,
+        DateTimeOffset? ReclamoExpiraEn,
+        bool ReclamoUsado,
+        int IntentosReclamo,
+        string? HashToken,
+        string Estado,
+        int? BateriaPct,
+        string? FwVersion);
+
+    private sealed record CribDto(
+        Guid Id,
+        Guid FamilyId,
+        string Nombre,
+        string EstadoConexion,
+        string ModoOperacion,
+        DateTimeOffset? ModoAtencionExpiraEn,
+        bool LuzEncendida,
+        int LuzNivel,
+        decimal EscalaMasa,
+        DateTimeOffset? UltimoHeartbeat,
+        DateTimeOffset CreadoEn)
+    {
+        public CribRecord ToModel() => new(
+            Id, FamilyId, Nombre, EstadoConexion, ModoOperacion,
+            ModoAtencionExpiraEn, LuzEncendida, LuzNivel, EscalaMasa, UltimoHeartbeat, CreadoEn);
+    }
+
+    private sealed record BabyDto(
+        Guid Id,
+        Guid FamilyId,
+        Guid? CunaId,
+        string Nombre,
+        DateOnly FechaNacimiento,
+        string? Notas,
+        DateTimeOffset CreadoEn)
+    {
+        public BabyRecord ToModel() => new(Id, FamilyId, CunaId, Nombre, FechaNacimiento, Notas, CreadoEn);
+    }
 }

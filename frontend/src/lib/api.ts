@@ -45,6 +45,61 @@ export interface IntercomChunkResponse {
   maxSafeGainApplied: number;
 }
 
+export interface CribRecord {
+  id: string;
+  familyId: string;
+  nombre: string;
+  estadoConexion: string;
+  modoOperacion: "monitoreo" | "atencion";
+  modoAtencionExpiraEn: string | null;
+  luzEncendida: boolean;
+  luzNivel: number;
+  escalaMasa: number;
+  ultimoHeartbeat: string | null;
+  creadoEn: string;
+}
+
+export interface BabyRecord {
+  id: string;
+  familyId: string;
+  cunaId: string | null;
+  nombre: string;
+  fechaNacimiento: string;
+  notas: string | null;
+  creadoEn: string;
+}
+
+export interface ClaimableDeviceRecord {
+  id: string;
+  deviceId: string;
+  cunaId: string | null;
+  familyId: string | null;
+  tipo: string;
+  estado: string;
+  bateriaPct: number | null;
+  fwVersion: string | null;
+}
+
+export interface CribSummaryResponse {
+  cuna: CribRecord;
+  dispositivos: ClaimableDeviceRecord[];
+  bebe: BabyRecord | null;
+}
+
+export interface OpenPairingWindowResponse {
+  expiraEn: string;
+  ventanaMinutos: number;
+}
+
+export interface ClaimDeviceResponse {
+  deviceRowId: string;
+  deviceId: string;
+  tipo: string;
+  cunaId: string;
+  nombreCuna: string;
+  deviceTokenOnce: string;
+}
+
 export class ApiError extends Error {
   public readonly status: number;
 
@@ -170,5 +225,86 @@ export const accountApi = {
         body: JSON.stringify(payload),
       }
     );
+  },
+
+  openPairingWindow(accessToken: string): Promise<OpenPairingWindowResponse> {
+    return requestJson<OpenPairingWindowResponse>("/api/pairing/window", accessToken, {
+      method: "POST",
+    });
+  },
+
+  claimDevice(
+    accessToken: string,
+    payload: {
+      deviceId: string;
+      codigoReclamo: string;
+      cunaId?: string | null;
+      nombreCuna?: string | null;
+    }
+  ): Promise<ClaimDeviceResponse> {
+    return requestJson<ClaimDeviceResponse>("/api/pairing/claim", accessToken, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  listCribs(accessToken: string): Promise<CribSummaryResponse[]> {
+    return requestJson<CribSummaryResponse[]>("/api/cribs", accessToken);
+  },
+
+  renameCrib(accessToken: string, cunaId: string, nombre: string): Promise<CribRecord> {
+    return requestJson<CribRecord>(`/api/cribs/${cunaId}`, accessToken, {
+      method: "PATCH",
+      body: JSON.stringify({ nombre }),
+    });
+  },
+
+  unlinkCrib(
+    accessToken: string,
+    cunaId: string,
+    textoConfirmacion: string
+  ): Promise<boolean> {
+    return requestJson<boolean>(`/api/cribs/${cunaId}/unlink`, accessToken, {
+      method: "POST",
+      body: JSON.stringify({
+        confirmacionExplicita: true,
+        textoConfirmacion,
+      }),
+    });
+  },
+
+  listBabies(accessToken: string): Promise<BabyRecord[]> {
+    return requestJson<BabyRecord[]>("/api/babies", accessToken);
+  },
+
+  createBaby(
+    accessToken: string,
+    payload: {
+      cunaId: string;
+      nombre: string;
+      fechaNacimiento: string;
+      notas?: string | null;
+    }
+  ): Promise<BabyRecord> {
+    return requestJson<BabyRecord>("/api/babies", accessToken, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  updateBaby(
+    accessToken: string,
+    babyId: string,
+    payload: {
+      cunaId: string;
+      nombre: string;
+      fechaNacimiento: string;
+      notas?: string | null;
+    }
+  ): Promise<BabyRecord> {
+    return requestJson<BabyRecord>(`/api/babies/${babyId}`, accessToken, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
   },
 };
