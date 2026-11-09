@@ -1,4 +1,6 @@
 using CunaServer.Api;
+using CunaServer.Data;
+using CunaServer.Services;
 
 LoadDotEnvIfExists();
 
@@ -18,11 +20,37 @@ builder.Services.AddCors(options =>
     });
 });
 
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<IJwtTokenValidator>(sp =>
+{
+    var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
+    var config = sp.GetRequiredService<IConfiguration>();
+    return new SupabaseJwksTokenValidator(httpFactory.CreateClient("JwksClient"), config);
+});
+
+var supabaseSecretKey = builder.Configuration["SUPABASE_SECRET_KEY"];
+if (!string.IsNullOrWhiteSpace(supabaseSecretKey))
+{
+    builder.Services.AddSingleton<IFamilyAccountRepository>(sp =>
+    {
+        var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
+        var config = sp.GetRequiredService<IConfiguration>();
+        return new PostgrestFamilyAccountRepository(httpFactory.CreateClient("PostgrestClient"), config);
+    });
+}
+else
+{
+    builder.Services.AddSingleton<IFamilyAccountRepository, InMemoryFamilyAccountRepository>();
+}
+
+builder.Services.AddSingleton<FamilyAccountService>();
+
 var app = builder.Build();
 
 app.UseCors("WebFrontend");
 
 app.MapHealthEndpoints();
+app.MapAccountAndFamilyEndpoints();
 
 await app.RunAsync();
 
