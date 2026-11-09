@@ -10,12 +10,11 @@ Este documento describe el paso a paso reproducible para presentar la demostraci
    - Entrar al panel de Supabase (`rjklzbarjuaxdhryklzw`) para confirmar que la instancia no esté pausada por inactividad.
 2. **Verificar variables de entorno locales (ignoradas por Git)**:
    - Confirmar que `backend/.env` y `frontend/.env` existen localmente a partir de `.env.example` (nunca mostrarlos en pantalla durante la presentación).
-3. **Ejecutar verificación rápida de salud y pruebas**:
+3. **Ejecutar verificación integral de salud y pruebas (1 comando)**:
    ```bash
-   dotnet test backend/CunaServer.sln --verbosity minimal
-   python3 -m unittest discover -s simulators -p "test_*.py"
-   python3 -m unittest discover -s firmware -p "test_*.py"
+   python3 scripts/verify_environment.py
    ```
+   *(Comprueba herramientas, checklist de seguridad, pruebas .NET, simuladores, firmware MicroPython y build de frontend React)*.
 
 ---
 
@@ -27,7 +26,7 @@ Abrir **3 terminales** en la raíz del repositorio:
   ```bash
   dotnet run --project backend/CunaServer/CunaServer.csproj
   ```
-  Verificar en `http://localhost:5080/health` que responde `{"status":"ok","tcpPort":9000}`.
+  Verificar en `http://localhost:5080/health` que responde `{"status":"ok","service":"CunaServer","tcpPort":9000,"connectedDevices":0}`.
 
 - **Terminal 2 — Aplicación Web React + Vite (`:5173`)**:
   ```bash

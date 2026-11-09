@@ -16,6 +16,11 @@ Documentación en `docs/`. Reglas para agentes de IA en `AGENTS.md` (apuntado po
 
 ## Ejecución y pruebas
 
+### Verificación integral rápida (M10)
+```bash
+python3 scripts/verify_environment.py
+```
+
 ### Backend (C# / ASP.NET Core en `:5080` y TCP en `:9000`)
 ```bash
 dotnet build backend/CunaServer.sln
@@ -46,5 +51,6 @@ python3 -m simulators.run_all --host 127.0.0.1 --port 9000
 - `frontend/`: aplicación web React + TypeScript + Tailwind CSS + shadcn/ui + Recharts.
 - `firmware/`: programas MicroPython por dispositivo (`central`, `colchon`, `movil`, `biberon`, `juguete`) + `common/` (`pins.py`, `hal.py`, `protocol_and_buffer.py`).
 - `simulators/`: simuladores en Python 3 para los 5 nodos.
+- `scripts/`: herramientas de verificación integral del entorno y demostración (`verify_environment.py`).
 - `supabase/`: migraciones SQL con políticas RLS (`migrations/`), semilla (`seed.sql`) y pruebas de aislamiento (`tests/isolation_test.sql`).
 - `docs/`: contexto (`PROJECT_CONTEXT.md`), plan aprobado (`PLAN_APROBADO.md`), arquitectura, protocolo, pruebas de hardware (`HARDWARE_PENDING_TESTS.md`), guion de demostración (`DEMO_GUIDE.md`) y seguridad (`SECURITY.md`).

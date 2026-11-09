@@ -47,6 +47,8 @@ public sealed class DeviceTcpServer : BackgroundService
     public bool IsDeviceConnected(string deviceId)
         => _activeSessions.ContainsKey(deviceId);
 
+    public int ConnectedDeviceCount => _activeSessions.Count;
+
     public bool DisconnectDevice(string deviceId)
     {
         if (_activeSessions.TryRemove(deviceId, out var session))
