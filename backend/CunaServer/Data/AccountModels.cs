@@ -75,6 +75,43 @@ public sealed record CreateInvitationResponse(
 
 public sealed record AcceptInvitationRequest(string Token, string? NombrePerfil, string? Avatar);
 
+public sealed record TelegramLinkRecord(
+    Guid Id,
+    Guid UsuarioId,
+    long? ChatId,
+    string? HashCodigo,
+    DateTimeOffset? CodigoExpiraEn,
+    bool CodigoUsado,
+    int Intentos,
+    DateTimeOffset? VinculadoEn,
+    DateTimeOffset CreadoEn);
+
+public sealed record TelegramLinkStatusResponse(
+    Guid UsuarioId,
+    bool Vinculado,
+    long? ChatId,
+    DateTimeOffset? VinculadoEn,
+    DateTimeOffset? CodigoPendienteExpiraEn);
+
+public sealed record GenerateTelegramCodeResponse(
+    string Codigo,
+    DateTimeOffset ExpiraEn,
+    string BotUsername,
+    string ComandoEjemplo);
+
+public sealed record FeedingReminderRecord(
+    Guid Id,
+    Guid FamilyId,
+    int IntervaloHoras,
+    bool Activo,
+    DateTimeOffset? UltimoEnvio,
+    DateTimeOffset ActualizadoEn);
+
+public sealed record UpdateFeedingReminderRequest(
+    int IntervaloHoras,
+    bool Activo,
+    Guid? PerfilId = null);
+
 public static class CryptoTokenHelper
 {
     public static string GenerateOpaqueToken(int byteLength = 32)

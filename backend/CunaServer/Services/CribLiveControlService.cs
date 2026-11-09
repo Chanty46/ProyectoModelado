@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using CunaServer.Data;
 using CunaServer.Tcp;
+using CunaServer.Telegram;
 
 namespace CunaServer.Services;
 
@@ -20,6 +21,7 @@ public sealed class CribLiveControlService
     private readonly DeviceTcpServer _tcpServer;
     private readonly CribLiveControlOptions _options;
     private readonly ILogger<CribLiveControlService> _logger;
+    private readonly TelegramBotService? _telegramService;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _removalGraceWindows = new();
 
     public CribLiveControlService(
@@ -27,13 +29,15 @@ public sealed class CribLiveControlService
         IDeviceTelemetryRepository deviceRepo,
         DeviceTcpServer tcpServer,
         ILogger<CribLiveControlService> logger,
-        CribLiveControlOptions? options = null)
+        CribLiveControlOptions? options = null,
+        TelegramBotService? telegramService = null)
     {
         _accountRepo = accountRepo;
         _deviceRepo = deviceRepo;
         _tcpServer = tcpServer;
         _logger = logger;
         _options = options ?? new CribLiveControlOptions();
+        _telegramService = telegramService;
         _tcpServer.DeviceAlertInterceptor = ProcessIncomingDeviceEventAsync;
     }
 
@@ -352,11 +356,26 @@ public sealed class CribLiveControlService
             {
                 // RF29: Verificar si la alerta por movimiento anómalo está habilitada en umbrales
                 var cfg = await _deviceRepo.GetCribConfigAsync(crib.Id, crib.FamilyId, ct);
-                return cfg.MovimientoAlertaActiva;
+                if (!cfg.MovimientoAlertaActiva)
+                {
+                    return false;
+                }
+
+                if (_telegramService is not null)
+                {
+                    await _telegramService.DispatchAlertForCribAsync(crib.Id, alertRecord, ct);
+                }
+                return true;
             }
 
             default:
+            {
+                if (_telegramService is not null && alertRecord.Tipo is "env_out_of_range" or "battery_low")
+                {
+                    await _telegramService.DispatchAlertForCribAsync(crib.Id, alertRecord, ct);
+                }
                 return true;
+            }
         }
     }
 
@@ -385,7 +404,7 @@ public sealed class CribLiveControlService
                 await _deviceRepo.UpdateCribConnectionStateAsync(crib.Id, "desconectada", ct);
 
                 var central = await _deviceRepo.GetCentralDeviceForCribAsync(crib.Id, ct);
-                await _deviceRepo.SaveEventAlertAsync(new EventAlertRecord(
+                var watchdogAlert = new EventAlertRecord(
                     Guid.NewGuid(),
                     crib.Id,
                     central?.Id ?? Guid.Empty,
@@ -397,7 +416,13 @@ public sealed class CribLiveControlService
                         kind = "watchdog_offline",
                         last_heartbeat = crib.UltimoHeartbeat.Value
                     }),
-                    now), ct);
+                    now);
+                await _deviceRepo.SaveEventAlertAsync(watchdogAlert, ct);
+
+                if (_telegramService is not null)
+                {
+                    await _telegramService.DispatchAlertForCribAsync(crib.Id, watchdogAlert, ct);
+                }
             }
         }
     }
@@ -507,7 +532,7 @@ public sealed class CribLiveControlService
 
                 await _deviceRepo.UpdateCribModeAsync(cunaId, "alarma", null, CancellationToken.None);
 
-                await _deviceRepo.SaveEventAlertAsync(new EventAlertRecord(
+                var alarmAlert = new EventAlertRecord(
                     Guid.NewGuid(),
                     cunaId,
                     triggerDeviceId,
@@ -515,7 +540,13 @@ public sealed class CribLiveControlService
                     "critica",
                     "Alarma crítica (RF04): retiro imprevisto del infante sin pausa de seguridad tras 5 s.",
                     JsonSerializer.Serialize(new { kind = "removal_alarm", grace_s = _options.RemovalGraceWindow.TotalSeconds }),
-                    DateTimeOffset.UtcNow), CancellationToken.None);
+                    DateTimeOffset.UtcNow);
+                await _deviceRepo.SaveEventAlertAsync(alarmAlert, CancellationToken.None);
+
+                if (_telegramService is not null)
+                {
+                    await _telegramService.DispatchAlertForCribAsync(cunaId, alarmAlert, CancellationToken.None);
+                }
 
                 var central = await _deviceRepo.GetCentralDeviceForCribAsync(cunaId, CancellationToken.None);
                 if (central is not null)

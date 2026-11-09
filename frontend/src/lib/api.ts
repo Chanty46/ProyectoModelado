@@ -107,6 +107,30 @@ export interface LiveCribStatusResponse {
   enVentanaGraciaRetiro: boolean;
 }
 
+export interface TelegramLinkStatusResponse {
+  usuarioId: string;
+  vinculado: boolean;
+  chatId: number | null;
+  vinculadoEn: string | null;
+  codigoPendienteExpiraEn: string | null;
+}
+
+export interface GenerateTelegramCodeResponse {
+  codigo: string;
+  expiraEn: string;
+  botUsername: string;
+  comandoEjemplo: string;
+}
+
+export interface FeedingReminderRecord {
+  id: string;
+  familyId: string;
+  intervaloHoras: number;
+  activo: boolean;
+  ultimoEnvio: string | null;
+  actualizadoEn: string;
+}
+
 export interface BabyRecord {
   id: string;
   familyId: string;
@@ -405,6 +429,36 @@ export const accountApi = {
     }
   ): Promise<CribConfig> {
     return requestJson<CribConfig>(`/api/cribs/${cunaId}/thresholds`, accessToken, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getTelegramLink(accessToken: string): Promise<TelegramLinkStatusResponse> {
+    return requestJson<TelegramLinkStatusResponse>("/api/telegram/link", accessToken);
+  },
+
+  generateTelegramLinkCode(accessToken: string): Promise<GenerateTelegramCodeResponse> {
+    return requestJson<GenerateTelegramCodeResponse>("/api/telegram/link-code", accessToken, {
+      method: "POST",
+    });
+  },
+
+  unlinkTelegram(accessToken: string): Promise<boolean> {
+    return requestJson<boolean>("/api/telegram/link", accessToken, {
+      method: "DELETE",
+    });
+  },
+
+  getFeedingReminder(accessToken: string): Promise<FeedingReminderRecord> {
+    return requestJson<FeedingReminderRecord>("/api/reminders", accessToken);
+  },
+
+  updateFeedingReminder(
+    accessToken: string,
+    payload: { intervaloHoras: number; activo: boolean; perfilId?: string | null }
+  ): Promise<FeedingReminderRecord> {
+    return requestJson<FeedingReminderRecord>("/api/reminders", accessToken, {
       method: "PUT",
       body: JSON.stringify(payload),
     });

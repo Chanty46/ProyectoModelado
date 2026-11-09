@@ -43,6 +43,18 @@ public interface IFamilyAccountRepository
 
     Task LogSecurityEventAsync(SecurityAuditEntry entry, CancellationToken ct);
     Task<IReadOnlyList<SecurityAuditEntry>> ListSecurityEventsAsync(Guid familyId, CancellationToken ct);
+
+    // M6: Vínculos de Telegram por usuario (RF38, RF39, RF19) y Recordatorios (RF18)
+    Task<TelegramLinkRecord?> GetTelegramLinkByUserAsync(Guid userId, CancellationToken ct);
+    Task<TelegramLinkRecord?> GetTelegramLinkByChatIdAsync(long chatId, CancellationToken ct);
+    Task<TelegramLinkRecord> SaveTelegramLinkCodeAsync(Guid userId, string hashCodigo, DateTimeOffset expiraEn, CancellationToken ct);
+    Task<TelegramLinkRecord?> CompleteTelegramLinkByCodeAsync(string candidateHash, long chatId, DateTimeOffset now, CancellationToken ct);
+    Task<bool> DeleteTelegramLinkByUserAsync(Guid userId, CancellationToken ct);
+    Task<IReadOnlyList<long>> ListLinkedTelegramChatsByFamilyAsync(Guid familyId, CancellationToken ct);
+
+    Task<FeedingReminderRecord> GetOrCreateFeedingReminderAsync(Guid familyId, CancellationToken ct);
+    Task<FeedingReminderRecord> UpdateFeedingReminderAsync(Guid familyId, int intervaloHoras, bool activo, DateTimeOffset? ultimoEnvio, CancellationToken ct);
+    Task<IReadOnlyList<FeedingReminderRecord>> ListActiveFeedingRemindersAsync(CancellationToken ct);
 }
 
 public sealed class InMemoryFamilyAccountRepository : IFamilyAccountRepository
@@ -51,6 +63,8 @@ public sealed class InMemoryFamilyAccountRepository : IFamilyAccountRepository
     private readonly ConcurrentDictionary<Guid, UserMembership> _members = new();
     private readonly ConcurrentDictionary<Guid, CaregiverProfileRecord> _profiles = new();
     private readonly ConcurrentDictionary<Guid, InvitationRecord> _invitations = new();
+    private readonly ConcurrentDictionary<Guid, TelegramLinkRecord> _telegramLinks = new();
+    private readonly ConcurrentDictionary<Guid, FeedingReminderRecord> _reminders = new();
     private readonly ConcurrentQueue<SecurityAuditEntry> _securityAudit = new();
     private readonly object _sync = new();
 
@@ -139,6 +153,8 @@ public sealed class InMemoryFamilyAccountRepository : IFamilyAccountRepository
                 return Task.FromResult(false);
             }
 
+            // D6 / RF22: Quitar a un miembro borra inmediatamente su vínculo de Telegram
+            _telegramLinks.TryRemove(memberUserId, out _);
             return Task.FromResult(_members.TryRemove(memberUserId, out _));
         }
     }
@@ -336,6 +352,172 @@ public sealed class InMemoryFamilyAccountRepository : IFamilyAccountRepository
             .OrderByDescending(e => e.Ts)
             .ToList();
         return Task.FromResult<IReadOnlyList<SecurityAuditEntry>>(list);
+    }
+
+    public Task<TelegramLinkRecord?> GetTelegramLinkByUserAsync(Guid userId, CancellationToken ct)
+    {
+        _telegramLinks.TryGetValue(userId, out var link);
+        return Task.FromResult(link);
+    }
+
+    public Task<TelegramLinkRecord?> GetTelegramLinkByChatIdAsync(long chatId, CancellationToken ct)
+    {
+        var link = _telegramLinks.Values.FirstOrDefault(l =>
+            l.ChatId == chatId && _members.ContainsKey(l.UsuarioId));
+        return Task.FromResult(link);
+    }
+
+    public Task<TelegramLinkRecord> SaveTelegramLinkCodeAsync(
+        Guid userId,
+        string hashCodigo,
+        DateTimeOffset expiraEn,
+        CancellationToken ct)
+    {
+        lock (_sync)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_telegramLinks.TryGetValue(userId, out var existing))
+            {
+                var updated = existing with
+                {
+                    HashCodigo = hashCodigo,
+                    CodigoExpiraEn = expiraEn,
+                    CodigoUsado = false,
+                    Intentos = 0
+                };
+                _telegramLinks[userId] = updated;
+                return Task.FromResult(updated);
+            }
+
+            var created = new TelegramLinkRecord(
+                Guid.NewGuid(),
+                userId,
+                null,
+                hashCodigo,
+                expiraEn,
+                false,
+                0,
+                null,
+                now);
+            _telegramLinks[userId] = created;
+            return Task.FromResult(created);
+        }
+    }
+
+    public Task<TelegramLinkRecord?> CompleteTelegramLinkByCodeAsync(
+        string candidateHash,
+        long chatId,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        lock (_sync)
+        {
+            var pending = _telegramLinks.Values
+                .Where(l =>
+                    !l.CodigoUsado &&
+                    !string.IsNullOrWhiteSpace(l.HashCodigo) &&
+                    l.CodigoExpiraEn.HasValue &&
+                    now < l.CodigoExpiraEn.Value &&
+                    l.Intentos < 5 &&
+                    _members.ContainsKey(l.UsuarioId))
+                .ToList();
+
+            var match = pending.FirstOrDefault(l =>
+                CryptoTokenHelper.ConstantTimeHashEquals(l.HashCodigo!, candidateHash));
+
+            if (match is null)
+            {
+                foreach (var item in pending)
+                {
+                    _telegramLinks[item.UsuarioId] = item with { Intentos = Math.Min(5, item.Intentos + 1) };
+                }
+                return Task.FromResult<TelegramLinkRecord?>(null);
+            }
+
+            // Si ese chat_id estaba vinculado a otro usuario anterior, desasociarlo
+            foreach (var other in _telegramLinks.Values.Where(l => l.ChatId == chatId && l.UsuarioId != match.UsuarioId).ToList())
+            {
+                _telegramLinks[other.UsuarioId] = other with { ChatId = null, VinculadoEn = null };
+            }
+
+            var linked = match with
+            {
+                ChatId = chatId,
+                HashCodigo = null,
+                CodigoUsado = true,
+                VinculadoEn = now
+            };
+            _telegramLinks[match.UsuarioId] = linked;
+            return Task.FromResult<TelegramLinkRecord?>(linked);
+        }
+    }
+
+    public Task<bool> DeleteTelegramLinkByUserAsync(Guid userId, CancellationToken ct)
+    {
+        return Task.FromResult(_telegramLinks.TryRemove(userId, out _));
+    }
+
+    public Task<IReadOnlyList<long>> ListLinkedTelegramChatsByFamilyAsync(Guid familyId, CancellationToken ct)
+    {
+        var memberIds = _members.Values
+            .Where(m => m.FamilyId == familyId)
+            .Select(m => m.Id)
+            .ToHashSet();
+
+        var chats = _telegramLinks.Values
+            .Where(l => memberIds.Contains(l.UsuarioId) && l.ChatId.HasValue)
+            .Select(l => l.ChatId!.Value)
+            .Distinct()
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<long>>(chats);
+    }
+
+    public Task<FeedingReminderRecord> GetOrCreateFeedingReminderAsync(Guid familyId, CancellationToken ct)
+    {
+        var record = _reminders.GetOrAdd(familyId, fId => new FeedingReminderRecord(
+            Guid.NewGuid(),
+            fId,
+            IntervaloHoras: 3,
+            Activo: true,
+            UltimoEnvio: null,
+            ActualizadoEn: DateTimeOffset.UtcNow));
+        return Task.FromResult(record);
+    }
+
+    public Task<FeedingReminderRecord> UpdateFeedingReminderAsync(
+        Guid familyId,
+        int intervaloHoras,
+        bool activo,
+        DateTimeOffset? ultimoEnvio,
+        CancellationToken ct)
+    {
+        lock (_sync)
+        {
+            var current = _reminders.GetOrAdd(familyId, fId => new FeedingReminderRecord(
+                Guid.NewGuid(),
+                fId,
+                3,
+                true,
+                null,
+                DateTimeOffset.UtcNow));
+
+            var updated = current with
+            {
+                IntervaloHoras = intervaloHoras,
+                Activo = activo,
+                UltimoEnvio = ultimoEnvio ?? current.UltimoEnvio,
+                ActualizadoEn = DateTimeOffset.UtcNow
+            };
+            _reminders[familyId] = updated;
+            return Task.FromResult(updated);
+        }
+    }
+
+    public Task<IReadOnlyList<FeedingReminderRecord>> ListActiveFeedingRemindersAsync(CancellationToken ct)
+    {
+        var list = _reminders.Values.Where(r => r.Activo).ToList();
+        return Task.FromResult<IReadOnlyList<FeedingReminderRecord>>(list);
     }
 }
 
@@ -681,6 +863,193 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
             r.Ts)).ToList();
     }
 
+    public async Task<TelegramLinkRecord?> GetTelegramLinkByUserAsync(Guid userId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<TelegramLinkDto>>(
+            $"telegram_vinculos?usuario_id=eq.{userId}&limit=1",
+            JsonOptions,
+            ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<TelegramLinkRecord?> GetTelegramLinkByChatIdAsync(long chatId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<TelegramLinkDto>>(
+            $"telegram_vinculos?chat_id=eq.{chatId}&limit=1",
+            JsonOptions,
+            ct);
+        return rows?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<TelegramLinkRecord> SaveTelegramLinkCodeAsync(
+        Guid userId,
+        string hashCodigo,
+        DateTimeOffset expiraEn,
+        CancellationToken ct)
+    {
+        var existing = await GetTelegramLinkByUserAsync(userId, ct);
+        if (existing is not null)
+        {
+            using var patchReq = new HttpRequestMessage(HttpMethod.Patch, $"telegram_vinculos?usuario_id=eq.{userId}");
+            patchReq.Headers.Add("Prefer", "return=representation");
+            patchReq.Content = JsonContent.Create(new
+            {
+                hash_codigo = hashCodigo,
+                codigo_expira_en = expiraEn,
+                codigo_usado = false,
+                intentos = 0
+            }, options: JsonOptions);
+            using var patchRes = await _http.SendAsync(patchReq, ct);
+            patchRes.EnsureSuccessStatusCode();
+            var updatedRows = await patchRes.Content.ReadFromJsonAsync<List<TelegramLinkDto>>(JsonOptions, ct);
+            return updatedRows!.Single().ToModel();
+        }
+
+        using var postReq = new HttpRequestMessage(HttpMethod.Post, "telegram_vinculos");
+        postReq.Headers.Add("Prefer", "return=representation");
+        postReq.Content = JsonContent.Create(new
+        {
+            usuario_id = userId,
+            hash_codigo = hashCodigo,
+            codigo_expira_en = expiraEn,
+            codigo_usado = false,
+            intentos = 0
+        }, options: JsonOptions);
+        using var postRes = await _http.SendAsync(postReq, ct);
+        postRes.EnsureSuccessStatusCode();
+        var createdRows = await postRes.Content.ReadFromJsonAsync<List<TelegramLinkDto>>(JsonOptions, ct);
+        return createdRows!.Single().ToModel();
+    }
+
+    public async Task<TelegramLinkRecord?> CompleteTelegramLinkByCodeAsync(
+        string candidateHash,
+        long chatId,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<TelegramLinkDto>>(
+            "telegram_vinculos?codigo_usado=is.false&intentos=lt.5",
+            JsonOptions,
+            ct) ?? [];
+
+        var activeRows = rows
+            .Where(r => !string.IsNullOrWhiteSpace(r.HashCodigo) && r.CodigoExpiraEn.HasValue && now < r.CodigoExpiraEn.Value)
+            .ToList();
+
+        var match = activeRows.FirstOrDefault(r =>
+            CryptoTokenHelper.ConstantTimeHashEquals(r.HashCodigo!, candidateHash));
+
+        if (match is null)
+        {
+            foreach (var r in activeRows)
+            {
+                using var incReq = new HttpRequestMessage(HttpMethod.Patch, $"telegram_vinculos?id=eq.{r.Id}");
+                incReq.Content = JsonContent.Create(new { intentos = Math.Min(5, r.Intentos + 1) }, options: JsonOptions);
+                using var incRes = await _http.SendAsync(incReq, ct);
+            }
+            return null;
+        }
+
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"telegram_vinculos?id=eq.{match.Id}");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            chat_id = chatId,
+            hash_codigo = (string?)null,
+            codigo_usado = true,
+            vinculado_en = now
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var updated = await res.Content.ReadFromJsonAsync<List<TelegramLinkDto>>(JsonOptions, ct);
+        return updated?.FirstOrDefault()?.ToModel();
+    }
+
+    public async Task<bool> DeleteTelegramLinkByUserAsync(Guid userId, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Delete, $"telegram_vinculos?usuario_id=eq.{userId}");
+        using var res = await _http.SendAsync(req, ct);
+        return res.IsSuccessStatusCode;
+    }
+
+    public async Task<IReadOnlyList<long>> ListLinkedTelegramChatsByFamilyAsync(Guid familyId, CancellationToken ct)
+    {
+        var members = await ListFamilyMembersAsync(familyId, ct);
+        if (members.Count == 0)
+        {
+            return Array.Empty<long>();
+        }
+
+        var chats = new List<long>();
+        foreach (var member in members)
+        {
+            var link = await GetTelegramLinkByUserAsync(member.Id, ct);
+            if (link?.ChatId is { } chatId && !chats.Contains(chatId))
+            {
+                chats.Add(chatId);
+            }
+        }
+        return chats;
+    }
+
+    public async Task<FeedingReminderRecord> GetOrCreateFeedingReminderAsync(Guid familyId, CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<FeedingReminderDto>>(
+            $"recordatorios?family_id=eq.{familyId}&limit=1",
+            JsonOptions,
+            ct);
+        if (rows is { Count: > 0 })
+        {
+            return rows[0].ToModel();
+        }
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, "recordatorios");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            family_id = familyId,
+            intervalo_h = 3,
+            activo = true
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var created = await res.Content.ReadFromJsonAsync<List<FeedingReminderDto>>(JsonOptions, ct);
+        return created!.Single().ToModel();
+    }
+
+    public async Task<FeedingReminderRecord> UpdateFeedingReminderAsync(
+        Guid familyId,
+        int intervaloHoras,
+        bool activo,
+        DateTimeOffset? ultimoEnvio,
+        CancellationToken ct)
+    {
+        _ = await GetOrCreateFeedingReminderAsync(familyId, ct);
+
+        using var req = new HttpRequestMessage(HttpMethod.Patch, $"recordatorios?family_id=eq.{familyId}");
+        req.Headers.Add("Prefer", "return=representation");
+        req.Content = JsonContent.Create(new
+        {
+            intervalo_h = intervaloHoras,
+            activo,
+            ultimo_envio = ultimoEnvio,
+            actualizado_en = DateTimeOffset.UtcNow
+        }, options: JsonOptions);
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var updated = await res.Content.ReadFromJsonAsync<List<FeedingReminderDto>>(JsonOptions, ct);
+        return updated!.Single().ToModel();
+    }
+
+    public async Task<IReadOnlyList<FeedingReminderRecord>> ListActiveFeedingRemindersAsync(CancellationToken ct)
+    {
+        var rows = await _http.GetFromJsonAsync<List<FeedingReminderDto>>(
+            "recordatorios?activo=is.true",
+            JsonOptions,
+            ct) ?? [];
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
     private sealed record FamilyDto(Guid Id, string Nombre, DateTimeOffset CreadoEn)
     {
         public FamilyRecord ToModel() => new(Id, Nombre, CreadoEn);
@@ -726,4 +1095,31 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
         string Evento,
         string? IpOrigen,
         DateTimeOffset Ts);
+
+    private sealed record TelegramLinkDto(
+        Guid Id,
+        Guid UsuarioId,
+        long? ChatId,
+        string? HashCodigo,
+        DateTimeOffset? CodigoExpiraEn,
+        bool CodigoUsado,
+        int Intentos,
+        DateTimeOffset? VinculadoEn,
+        DateTimeOffset CreadoEn)
+    {
+        public TelegramLinkRecord ToModel() => new(
+            Id, UsuarioId, ChatId, HashCodigo, CodigoExpiraEn, CodigoUsado, Intentos, VinculadoEn, CreadoEn);
+    }
+
+    private sealed record FeedingReminderDto(
+        Guid Id,
+        Guid FamilyId,
+        int IntervaloH,
+        bool Activo,
+        DateTimeOffset? UltimoEnvio,
+        DateTimeOffset ActualizadoEn)
+    {
+        public FeedingReminderRecord ToModel() => new(
+            Id, FamilyId, IntervaloH, Activo, UltimoEnvio, ActualizadoEn);
+    }
 }
