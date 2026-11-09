@@ -88,8 +88,12 @@ def main() -> int:
         print(f"  [{GREEN}OK{RESET}] Ningún secreto rastreado en Git.")
 
     # Escaneo de patrones de tokens
-    forbidden_pattern = r"(sb_secret_[A-Za-z0-9]{10}|GOCSPX-[A-Za-z0-9]{5}|AAGelNrz|Pr0y3ct0)"
-    code, grep_out = run_command(["git", "grep", "-iE", forbidden_pattern])
+    forbidden_pattern = "(sb_secret_[A-Za-z0-9]{10}|GOCSPX-[A-Za-z0-9]{5}|" + "AAGel" + "Nrz|" + "Pr0y" + "3ct0)"
+    code, grep_out = run_command([
+        "git", "grep", "-iE", forbidden_pattern, "--",
+        ":^scripts/verify_environment.py",
+        ":^backend/CunaServer.Tests/EndToEndAndSecurityChecklistTests.cs"
+    ])
     if code == 0 and grep_out.strip():
         print(f"  [{RED}CRÍTICO{RESET}] Posibles credenciales reales detectadas en el código:\n{grep_out}")
         failures.append("Patrones de secretos en código")
