@@ -1,6 +1,7 @@
 using CunaServer.Api;
 using CunaServer.Data;
 using CunaServer.Services;
+using CunaServer.Tcp;
 
 LoadDotEnvIfExists();
 
@@ -37,13 +38,25 @@ if (!string.IsNullOrWhiteSpace(supabaseSecretKey))
         var config = sp.GetRequiredService<IConfiguration>();
         return new PostgrestFamilyAccountRepository(httpFactory.CreateClient("PostgrestClient"), config);
     });
+    builder.Services.AddSingleton<IDeviceTelemetryRepository>(sp =>
+    {
+        var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
+        var config = sp.GetRequiredService<IConfiguration>();
+        return new PostgrestDeviceTelemetryRepository(httpFactory.CreateClient("PostgrestTelemetryClient"), config);
+    });
 }
 else
 {
     builder.Services.AddSingleton<IFamilyAccountRepository, InMemoryFamilyAccountRepository>();
+    builder.Services.AddSingleton<IDeviceTelemetryRepository, InMemoryDeviceTelemetryRepository>();
 }
 
 builder.Services.AddSingleton<FamilyAccountService>();
+builder.Services.AddSingleton<DeviceTcpServer>();
+if (!string.Equals(builder.Configuration["TCP_SERVER_ENABLED"], "false", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<DeviceTcpServer>());
+}
 
 var app = builder.Build();
 
