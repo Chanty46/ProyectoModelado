@@ -17,7 +17,7 @@ Sin cifrado (decisión D1). La seguridad se apoya en token por dispositivo y val
 | `heartbeat` | D→S | `battery_pct` (si aplica), `uptime_s` — cada 15 s |
 | `telemetry` | D→S | por dispositivo: central `temp_c`, `hum_pct`; colchón `mass_kg`, `movement_idx`; biberón `mass_g`, `temp_c`, `battery_pct`; juguete `battery_pct`. Agregados por minuto |
 | `event` | D→S | `kind`: `removal`, `env_out_of_range`, `movement_high`, `button_attention`, `bottle_placed`, `game_end` (`hits`, `secs`), `battery_low`, `mobile_session_end` (`secs`, `pattern`, `speed`) |
-| `command` | S→D | `cmd`: `light_set`(`on`,`level`), `mode_set`, `alarm_set`, `thresholds_set`, `song_play`, `mobile_play`, `status_led`, `audio_*` (spike) ; `id` para ack |
+| `command` | S→D | `cmd`: `light_set`(`on`,`level`), `mode_set`, `alarm_set`, `thresholds_set`, `song_play`, `mobile_play`, `status_led`, `audio_chunk`(`rate`,`seq`,`max_dba`,`pcm_b64`, ≤ 1280 bytes PCM u8 sin `ack` bloqueante) ; `id` para ack |
 | `ack` | ambos | `id` del mensaje confirmado, `ok` |
 | `error` | ambos | `code`, `msg` |
 

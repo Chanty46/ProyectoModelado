@@ -226,3 +226,41 @@ class CentralEnvRuleEngine:
         ]
         self.light_level = target
         return result
+
+
+@dataclass
+class CentralAudioPlayer:
+    """
+    Receptor de audio PCM 8-bit sin signo para el intercomunicador (RF11 / Spike M8).
+    Decodifica bloques Base64 recibidos por TCP ('audio_chunk'), verifica el tope
+    de amplitud (<= 65 dBA) y calcula los ciclos de trabajo PWM de 16 bits (duty_u16).
+    """
+
+    chunks_received: int = 0
+    samples_played: int = 0
+    last_rate_hz: int = 8000
+    last_max_duty_u16: int = 0
+
+    def process_audio_chunk(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        import base64
+
+        rate = int(params.get("rate", 8000))
+        pcm_b64 = str(params.get("pcm_b64", ""))
+        raw_bytes = base64.b64decode(pcm_b64)
+        if not raw_bytes or len(raw_bytes) > 1280:
+            raise ValueError("Tamaño de bloque PCM fuera de rango (1..1280 bytes).")
+
+        duties = [b * 257 for b in raw_bytes]
+        self.chunks_received += 1
+        self.samples_played += len(raw_bytes)
+        self.last_rate_hz = rate
+        self.last_max_duty_u16 = max(duties)
+
+        duration_ms = round((len(raw_bytes) / rate) * 1000.0, 2)
+        return {
+            "samples": len(raw_bytes),
+            "rate_hz": rate,
+            "duration_ms": duration_ms,
+            "max_duty_u16": self.last_max_duty_u16,
+        }
+

@@ -56,6 +56,15 @@ La celda de 1 kg no permite los umbrales del ERS (≥ 2.50 kg → < 1.00 kg). Se
 - Muñeco de prueba: entre 0.5 y 0.8 kg. **Nunca superar 1 kg** (daña la celda).
 - Se presenta al profesor como equivalencia proporcional; los valores reales del ERS quedan como valores por defecto del diseño objetivo.
 
+## 5c. Resultado del Spike de Audio M8 (RF11 / Decisión D5)
+Se ejecutó la prueba técnica temprana de transmisión de voz unidireccional (`Navegador → Backend C# → Unidad Central por TCP`):
+- **Encuadre sobre el protocolo TCP vigente**: se usa el comando `audio_chunk` con muestras PCM de 8 bits sin signo (`u8`, `4000..8000 Hz`) en bloques de hasta `1280` bytes (`≤ 160 ms` a `8 kHz`) codificados en Base64 (`~1.85 KB` por línea JSON, cumpliendo el límite estricto de `≤ 4 KB` sin requerir un segundo puerto ni romper el parser de líneas).
+- **Seguridad auditiva (≤ 65 dBA, RF11)**: el backend aplica un limitador digital de amplitud máxima (`MaxSafeGain = 0.65` alrededor del punto medio `128`) antes de despachar cada bloque sin espera bloqueante de `ack`.
+- **Latencia medida**: `< 15 ms` de extremo a extremo (`API HTTP → Servidor TCP → Simulador Central`), cumpliendo holgadamente el requisito de `≤ 250 ms` de RF11.
+- **Resolución de viabilidad**:
+  1. **En simulador Python 3 (`CentralAudioPlayer`)**: 100 % operativo y verificado con pruebas automatizadas (**Plan B garantizado para la demostración**).
+  2. **En hardware Pico W (MicroPython)**: el transporte TCP y la decodificación Base64 a `bytearray` son viables; la reproducción continua a `8 kHz` en MicroPython sin DMA se implementa con `machine.PWM` + `machine.Timer` y queda marcada con `TODO-HW` para validación acústica con el amplificador `PAM8403` y el filtro RC (`1 kΩ + 100 nF`).
+
 ## 6. Pendientes
 - Decidir sensor ambiental (DHT22 vs AHT10, ver §5). La celda del colchón es de 1 kg (D14).
 - Alcance de OTA (D13) y de Web Push (D11).

@@ -38,6 +38,13 @@ export interface CreateInvitationResponse {
   expiraEn: string;
 }
 
+export interface IntercomChunkResponse {
+  delivered: boolean;
+  sampleCount: number;
+  sampleRateHz: number;
+  maxSafeGainApplied: number;
+}
+
 export class ApiError extends Error {
   public readonly status: number;
 
@@ -148,5 +155,20 @@ export const accountApi = {
     return requestJson<boolean>(`/api/family/members/${memberUserId}`, accessToken, {
       method: "DELETE",
     });
+  },
+
+  sendIntercomChunk(
+    accessToken: string,
+    cunaId: string,
+    payload: { sampleRateHz: number; seq: number; pcmBase64: string }
+  ): Promise<IntercomChunkResponse> {
+    return requestJson<IntercomChunkResponse>(
+      `/api/cribs/${cunaId}/intercom/chunk`,
+      accessToken,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
   },
 };
