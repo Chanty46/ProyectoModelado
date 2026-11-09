@@ -430,3 +430,14 @@ FodyWeavers.xsd
 .env.*
 !.env.example
 secrets.py
+**/secrets.py
+
+# --- adicionales del proyecto ---
+node_modules/
+dist/
+bin/
+obj/
+__pycache__/
+.venv/
+*.pem
+*.key
