@@ -1,4 +1,4 @@
-# Guion de Demostración en Vivo — Cuna Inteligente (Hito M10)
+# Guion de Demostración en Vivo — Cuna Inteligente (Hito M11)
 
 Este documento describe el paso a paso reproducible para presentar la demostración del **Ecosistema Ciberfísico para Supervisión Perimetral, Microclima y Nutrición Infantil** en la laptop del equipo (con simuladores en Python 3 o con las 5 Raspberry Pi Pico W en el hotspot local).
 
@@ -14,7 +14,7 @@ Este documento describe el paso a paso reproducible para presentar la demostraci
    ```bash
    python3 scripts/verify_environment.py
    ```
-   *(Comprueba herramientas, checklist de seguridad, pruebas .NET, simuladores, firmware MicroPython y build de frontend React)*.
+   *(Comprueba herramientas, checklist de seguridad, pruebas .NET, simuladores, firmware MicroPython, pruebas unitarias/build de frontend React y simulación HTTP de Telegram Bot API)*.
 
 ---
 
@@ -70,8 +70,9 @@ Abrir **3 terminales** en la raíz del repositorio:
 2. Mostrar cómo el navegador captura PCM 8-bit a `8 kHz`, el backend C# lo valida y reenvía como `command: audio_chunk` por TCP a la unidad `central`, y el contador de tramas recibidas incrementa en tiempo real.
 
 ### Paso 5: Bot de Telegram y Recordatorios Dinámicos (M6 — RF18, RF19, RF38, RF39)
-1. Generar un código `/vincular CODIGO` en la sección **Telegram y Recordatorios**.
-2. Enviar `/estado` al bot `@CunasInteligentes_Modelado_Bot` y mostrar la respuesta en `< 2 s` con estado operativo, presencia, temperatura, humedad y última toma.
+1. Generar un código `/vincular CODIGO` (o usar el botón **Abrir en Telegram** con enlace profundo `/start CODIGO`) en la pestaña **Telegram y Recordatorios**.
+   - *Nota técnica Bot API*: Telegram no permite a los bots iniciar mensajes directamente hacia números telefónicos (por ejemplo `+506 83021112`); el usuario debe enviar `/start` primero a `@CunasInteligentes_Modelado_Bot` para obtener un `chat_id` entero autorizado.
+2. Usar **Enviar mensaje de prueba** (`POST /api/telegram/test` / `GET /api/telegram/status`) o `python3 scripts/test_telegram.py --mock` / `--probe-network` para validar el transporte HTTP hacia `api.telegram.org`, y enviar `/estado` al bot para mostrar la respuesta en `< 2 s`.
 3. Configurar el intervalo de recordatorio de alimentación (`1–8 h`) y mostrar cómo una nueva toma reinicia automáticamente el temporizador (`RF18`).
 
 ### Paso 6: Alimentación Inteligente, Juguetes e Historiales Auditados (M7 — RF12 a RF17, RF30 a RF37)
