@@ -10,113 +10,84 @@ public static class TelegramAndRemindersEndpoints
     {
         var group = endpoints.MapGroup("/api");
 
-        group.MapGet("/telegram/link", async (
+        group.MapGet("/telegram/link", (
             HttpContext http,
             IJwtTokenValidator jwtValidator,
             TelegramBotService telegramService,
             CancellationToken ct) =>
-        {
-            var identity = await AuthenticateAsync(http, jwtValidator, ct);
-            if (identity is null)
-            {
-                return Results.Json(new { error = "No autenticado." }, statusCode: StatusCodes.Status401Unauthorized);
-            }
+            EndpointHelpers.ExecuteServiceAsync(
+                http,
+                jwtValidator,
+                (identity, _) => telegramService.GetLinkStatusAsync(identity, ct),
+                ct));
 
-            var result = await telegramService.GetLinkStatusAsync(identity, ct);
-            return ToHttpResult(result);
-        });
-
-        group.MapPost("/telegram/link-code", async (
+        group.MapPost("/telegram/link-code", (
             HttpContext http,
             IJwtTokenValidator jwtValidator,
             TelegramBotService telegramService,
             CancellationToken ct) =>
-        {
-            var identity = await AuthenticateAsync(http, jwtValidator, ct);
-            if (identity is null)
-            {
-                return Results.Json(new { error = "No autenticado." }, statusCode: StatusCodes.Status401Unauthorized);
-            }
+            EndpointHelpers.ExecuteServiceAsync(
+                http,
+                jwtValidator,
+                (identity, ip) => telegramService.GenerateLinkCodeAsync(identity, ip, ct),
+                ct));
 
-            var result = await telegramService.GenerateLinkCodeAsync(identity, GetClientIp(http), ct);
-            return ToHttpResult(result);
-        });
-
-        group.MapDelete("/telegram/link", async (
+        group.MapDelete("/telegram/link", (
             HttpContext http,
             IJwtTokenValidator jwtValidator,
             TelegramBotService telegramService,
             CancellationToken ct) =>
-        {
-            var identity = await AuthenticateAsync(http, jwtValidator, ct);
-            if (identity is null)
-            {
-                return Results.Json(new { error = "No autenticado." }, statusCode: StatusCodes.Status401Unauthorized);
-            }
+            EndpointHelpers.ExecuteServiceAsync(
+                http,
+                jwtValidator,
+                (identity, ip) => telegramService.UnlinkMyTelegramAsync(identity, ip, ct),
+                ct));
 
-            var result = await telegramService.UnlinkMyTelegramAsync(identity, GetClientIp(http), ct);
-            return ToHttpResult(result);
-        });
-
-        group.MapGet("/reminders", async (
+        group.MapGet("/telegram/status", (
             HttpContext http,
             IJwtTokenValidator jwtValidator,
             TelegramBotService telegramService,
             CancellationToken ct) =>
-        {
-            var identity = await AuthenticateAsync(http, jwtValidator, ct);
-            if (identity is null)
-            {
-                return Results.Json(new { error = "No autenticado." }, statusCode: StatusCodes.Status401Unauthorized);
-            }
+            EndpointHelpers.ExecuteServiceAsync(
+                http,
+                jwtValidator,
+                (identity, _) => telegramService.GetServiceStatusAsync(identity, ct),
+                ct));
 
-            var result = await telegramService.GetFeedingReminderAsync(identity, ct);
-            return ToHttpResult(result);
-        });
+        group.MapPost("/telegram/test", (
+            HttpContext http,
+            IJwtTokenValidator jwtValidator,
+            TelegramBotService telegramService,
+            CancellationToken ct) =>
+            EndpointHelpers.ExecuteServiceAsync(
+                http,
+                jwtValidator,
+                (identity, ip) => telegramService.SendTestNotificationAsync(identity, ip, ct),
+                ct));
 
-        group.MapPut("/reminders", async (
+        group.MapGet("/reminders", (
+            HttpContext http,
+            IJwtTokenValidator jwtValidator,
+            TelegramBotService telegramService,
+            CancellationToken ct) =>
+            EndpointHelpers.ExecuteServiceAsync(
+                http,
+                jwtValidator,
+                (identity, _) => telegramService.GetFeedingReminderAsync(identity, ct),
+                ct));
+
+        group.MapPut("/reminders", (
             HttpContext http,
             UpdateFeedingReminderRequest request,
             IJwtTokenValidator jwtValidator,
             TelegramBotService telegramService,
             CancellationToken ct) =>
-        {
-            var identity = await AuthenticateAsync(http, jwtValidator, ct);
-            if (identity is null)
-            {
-                return Results.Json(new { error = "No autenticado." }, statusCode: StatusCodes.Status401Unauthorized);
-            }
-
-            var result = await telegramService.UpdateFeedingReminderAsync(identity, request, GetClientIp(http), ct);
-            return ToHttpResult(result);
-        });
+            EndpointHelpers.ExecuteServiceAsync(
+                http,
+                jwtValidator,
+                (identity, ip) => telegramService.UpdateFeedingReminderAsync(identity, request, ip, ct),
+                ct));
 
         return endpoints;
-    }
-
-    private static Task<AuthenticatedIdentity?> AuthenticateAsync(
-        HttpContext http,
-        IJwtTokenValidator jwtValidator,
-        CancellationToken ct)
-    {
-        var authHeader = http.Request.Headers.Authorization.ToString();
-        return jwtValidator.ValidateBearerTokenAsync(authHeader, ct);
-    }
-
-    private static string? GetClientIp(HttpContext http)
-        => http.Connection.RemoteIpAddress?.ToString();
-
-    private static IResult ToHttpResult<T>(ServiceResult<T> result)
-    {
-        return result.Status switch
-        {
-            ServiceStatus.Ok => Results.Ok(result.Data),
-            ServiceStatus.Created => Results.Json(result.Data, statusCode: StatusCodes.Status201Created),
-            ServiceStatus.BadRequest => Results.BadRequest(new { error = result.ErrorMessage }),
-            ServiceStatus.Forbidden => Results.Json(new { error = result.ErrorMessage }, statusCode: StatusCodes.Status403Forbidden),
-            ServiceStatus.NotFound => Results.NotFound(new { error = result.ErrorMessage }),
-            ServiceStatus.Conflict => Results.Conflict(new { error = result.ErrorMessage }),
-            _ => Results.StatusCode(StatusCodes.Status500InternalServerError)
-        };
     }
 }

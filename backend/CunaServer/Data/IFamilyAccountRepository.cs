@@ -951,6 +951,19 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
             return null;
         }
 
+        // Evitar conflicto con restricción UNIQUE(chat_id) si ese Telegram ya estaba vinculado a otro usuario
+        using (var clearPrevReq = new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"telegram_vinculos?chat_id=eq.{chatId}&id=neq.{match.Id}"))
+        {
+            clearPrevReq.Content = JsonContent.Create(new
+            {
+                chat_id = (long?)null,
+                vinculado_en = (DateTimeOffset?)null
+            }, options: JsonOptions);
+            using var clearRes = await _http.SendAsync(clearPrevReq, ct);
+        }
+
         using var req = new HttpRequestMessage(HttpMethod.Patch, $"telegram_vinculos?id=eq.{match.Id}");
         req.Headers.Add("Prefer", "return=representation");
         req.Content = JsonContent.Create(new
@@ -981,16 +994,17 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
             return Array.Empty<long>();
         }
 
-        var chats = new List<long>();
-        foreach (var member in members)
-        {
-            var link = await GetTelegramLinkByUserAsync(member.Id, ct);
-            if (link?.ChatId is { } chatId && !chats.Contains(chatId))
-            {
-                chats.Add(chatId);
-            }
-        }
-        return chats;
+        var idsFilter = string.Join(",", members.Select(m => m.Id));
+        var rows = await _http.GetFromJsonAsync<List<TelegramChatIdDto>>(
+            $"telegram_vinculos?usuario_id=in.({idsFilter})&chat_id=not.is.null&select=chat_id",
+            JsonOptions,
+            ct);
+
+        return rows?
+            .Where(r => r.ChatId.HasValue)
+            .Select(r => r.ChatId!.Value)
+            .Distinct()
+            .ToList() ?? [];
     }
 
     public async Task<FeedingReminderRecord> GetOrCreateFeedingReminderAsync(Guid familyId, CancellationToken ct)
@@ -1096,6 +1110,8 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
         string Evento,
         string? IpOrigen,
         DateTimeOffset Ts);
+
+    private sealed record TelegramChatIdDto(long? ChatId);
 
     private sealed record TelegramLinkDto(
         Guid Id,

@@ -18,10 +18,19 @@ public sealed record TelegramSentMessage(
     string Text,
     DateTimeOffset SentAt);
 
+public sealed record TelegramBotProbeResult(
+    bool TokenConfigured,
+    bool Reachable,
+    string? ResolvedUsername,
+    int? LastHttpStatusCode,
+    string? Detail);
+
 public interface ITelegramBotTransport
 {
     Task<IReadOnlyList<TelegramInboundMessage>> GetUpdatesAsync(long offset, CancellationToken ct);
     Task<bool> SendMessageAsync(long chatId, string text, CancellationToken ct);
+    Task<TelegramBotProbeResult> ProbeBotAsync(CancellationToken ct)
+        => Task.FromResult(new TelegramBotProbeResult(false, true, null, null, "inmemory"));
 }
 
 public sealed class InMemoryTelegramBotTransport : ITelegramBotTransport
@@ -58,6 +67,14 @@ public sealed class InMemoryTelegramBotTransport : ITelegramBotTransport
         _sent.Enqueue(new TelegramSentMessage(chatId, text, DateTimeOffset.UtcNow));
         return Task.FromResult(true);
     }
+
+    public Task<TelegramBotProbeResult> ProbeBotAsync(CancellationToken ct)
+        => Task.FromResult(new TelegramBotProbeResult(
+            TokenConfigured: false,
+            Reachable: true,
+            ResolvedUsername: null,
+            LastHttpStatusCode: null,
+            Detail: "Transporte local en memoria activo (sin TELEGRAM_BOT_TOKEN)."));
 }
 
 public sealed class HttpTelegramBotTransport : ITelegramBotTransport
@@ -70,12 +87,18 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
 
     private readonly HttpClient _http;
     private readonly string _botToken;
+    private readonly string _apiBaseUrl;
     private readonly ILogger<HttpTelegramBotTransport> _logger;
 
-    public HttpTelegramBotTransport(HttpClient http, string botToken, ILogger<HttpTelegramBotTransport> logger)
+    public HttpTelegramBotTransport(
+        HttpClient http,
+        string botToken,
+        ILogger<HttpTelegramBotTransport> logger,
+        string apiBaseUrl = "https://api.telegram.org")
     {
         _http = http;
         _botToken = botToken.Trim();
+        _apiBaseUrl = apiBaseUrl.TrimEnd('/');
         _logger = logger;
     }
 
@@ -83,8 +106,17 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
     {
         try
         {
-            var url = $"https://api.telegram.org/bot{_botToken}/getUpdates?offset={offset}&timeout=2";
-            var resp = await _http.GetFromJsonAsync<TelegramUpdatesEnvelope>(url, JsonOptions, ct);
+            var url = $"{_apiBaseUrl}/bot{_botToken}/getUpdates?offset={offset}&timeout=2";
+            using var res = await _http.GetAsync(url, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Telegram getUpdates respondió HTTP {StatusCode}.",
+                    (int)res.StatusCode);
+                return Array.Empty<TelegramInboundMessage>();
+            }
+
+            var resp = await res.Content.ReadFromJsonAsync<TelegramUpdatesEnvelope>(JsonOptions, ct);
             if (resp?.Ok != true || resp.Result is null)
             {
                 return Array.Empty<TelegramInboundMessage>();
@@ -110,13 +142,47 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
         try
         {
             var sanitizedText = text.Length > 4000 ? text[..4000] + "..." : text;
-            var url = $"https://api.telegram.org/bot{_botToken}/sendMessage";
-            using var res = await _http.PostAsJsonAsync(url, new
+            var url = $"{_apiBaseUrl}/bot{_botToken}/sendMessage";
+            var payload = new
             {
                 chat_id = chatId,
                 text = sanitizedText
-            }, JsonOptions, ct);
-            return res.IsSuccessStatusCode;
+            };
+
+            using var res = await _http.PostAsJsonAsync(url, payload, JsonOptions, ct);
+            if (res.IsSuccessStatusCode)
+            {
+                return true;
+            }
+
+            if ((int)res.StatusCode == StatusCodes.Status429TooManyRequests)
+            {
+                var retryAfterSeconds = await TryReadRetryAfterSecondsAsync(res, ct);
+                var delay = TimeSpan.FromSeconds(Math.Clamp(retryAfterSeconds, 1, 5));
+                _logger.LogWarning(
+                    "Telegram sendMessage limitó tasa (HTTP 429) para chat_id={ChatId}; reintentando en {DelaySeconds}s.",
+                    chatId,
+                    delay.TotalSeconds);
+                await Task.Delay(delay, ct);
+
+                using var retryRes = await _http.PostAsJsonAsync(url, payload, JsonOptions, ct);
+                if (retryRes.IsSuccessStatusCode)
+                {
+                    return true;
+                }
+
+                _logger.LogWarning(
+                    "Reintento de Telegram sendMessage falló con HTTP {StatusCode} para chat_id={ChatId}.",
+                    (int)retryRes.StatusCode,
+                    chatId);
+                return false;
+            }
+
+            _logger.LogWarning(
+                "Telegram sendMessage rechazado con HTTP {StatusCode} para chat_id={ChatId}.",
+                (int)res.StatusCode,
+                chatId);
+            return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -125,10 +191,73 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
         }
     }
 
+    public async Task<TelegramBotProbeResult> ProbeBotAsync(CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{_apiBaseUrl}/bot{_botToken}/getMe";
+            using var res = await _http.GetAsync(url, ct);
+            var statusCode = (int)res.StatusCode;
+            if (!res.IsSuccessStatusCode)
+            {
+                return new TelegramBotProbeResult(
+                    TokenConfigured: true,
+                    Reachable: false,
+                    ResolvedUsername: null,
+                    LastHttpStatusCode: statusCode,
+                    Detail: $"Telegram API respondió HTTP {statusCode}. Verifica TELEGRAM_BOT_TOKEN.");
+            }
+
+            var env = await res.Content.ReadFromJsonAsync<TelegramGetMeEnvelope>(JsonOptions, ct);
+            if (env?.Ok != true || env.Result is null)
+            {
+                return new TelegramBotProbeResult(
+                    TokenConfigured: true,
+                    Reachable: false,
+                    ResolvedUsername: null,
+                    LastHttpStatusCode: statusCode,
+                    Detail: "Respuesta inesperada de getMe en Telegram API.");
+            }
+
+            return new TelegramBotProbeResult(
+                TokenConfigured: true,
+                Reachable: true,
+                ResolvedUsername: env.Result.Username,
+                LastHttpStatusCode: statusCode,
+                Detail: "Conexión verificada con Bot API de Telegram.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new TelegramBotProbeResult(
+                TokenConfigured: true,
+                Reachable: false,
+                ResolvedUsername: null,
+                LastHttpStatusCode: null,
+                Detail: $"Error de red consultando Telegram API ({ex.GetType().Name}).");
+        }
+    }
+
+    private static async Task<int> TryReadRetryAfterSecondsAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var err = await response.Content.ReadFromJsonAsync<TelegramErrorEnvelope>(JsonOptions, ct);
+            return err?.Parameters?.RetryAfter ?? 1;
+        }
+        catch
+        {
+            return 1;
+        }
+    }
+
     private sealed record TelegramUpdatesEnvelope(bool Ok, List<TelegramUpdateItem>? Result);
     private sealed record TelegramUpdateItem(long UpdateId, TelegramMessageItem? Message);
     private sealed record TelegramMessageItem(TelegramChatItem? Chat, string? Text);
     private sealed record TelegramChatItem(long Id);
+    private sealed record TelegramGetMeEnvelope(bool Ok, TelegramBotUserItem? Result);
+    private sealed record TelegramBotUserItem(long Id, bool IsBot, string? Username);
+    private sealed record TelegramErrorEnvelope(bool Ok, TelegramRetryParams? Parameters);
+    private sealed record TelegramRetryParams(int? RetryAfter);
 }
 
 public sealed class TelegramBotService
@@ -203,11 +332,83 @@ public sealed class TelegramBotService
             $"expira_en={expiresAt:O}",
             DateTimeOffset.UtcNow), ct);
 
+        var cleanHandle = _botUsername.Trim().TrimStart('@');
+        var deepLinkUrl = $"https://t.me/{cleanHandle}?start={Uri.EscapeDataString(code)}";
+
         return ServiceResult<GenerateTelegramCodeResponse>.Created(new GenerateTelegramCodeResponse(
             code,
             expiresAt,
             _botUsername,
-            $"/vincular {code}"));
+            $"/vincular {code}",
+            deepLinkUrl));
+    }
+
+    public async Task<ServiceResult<TelegramBotStatusResponse>> GetServiceStatusAsync(
+        AuthenticatedIdentity identity,
+        CancellationToken ct)
+    {
+        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
+        if (membership is null)
+        {
+            return ServiceResult<TelegramBotStatusResponse>.Forbidden("El usuario no pertenece a una familia activa.");
+        }
+
+        var link = await _accountRepo.GetTelegramLinkByUserAsync(identity.UserId, ct);
+        var probe = await _transport.ProbeBotAsync(ct);
+        var mode = _transport is HttpTelegramBotTransport ? "telegram_http" : "inmemory";
+
+        const string phoneRuleNote =
+            "Por políticas de Telegram Bot API no es posible enviar mensajes directo a un número telefónico; el cuidador debe abrir el bot y vincular su Chat ID con /vincular o mediante el enlace profundo /start.";
+
+        return ServiceResult<TelegramBotStatusResponse>.Ok(new TelegramBotStatusResponse(
+            probe.TokenConfigured,
+            mode,
+            probe.Reachable,
+            _botUsername,
+            probe.ResolvedUsername,
+            link?.ChatId.HasValue == true,
+            link?.ChatId,
+            $"{probe.Detail ?? mode} {phoneRuleNote}"));
+    }
+
+    public async Task<ServiceResult<TelegramTestMessageResponse>> SendTestNotificationAsync(
+        AuthenticatedIdentity identity,
+        string? clientIp,
+        CancellationToken ct)
+    {
+        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
+        if (membership is null)
+        {
+            return ServiceResult<TelegramTestMessageResponse>.Forbidden("El usuario no pertenece a una familia activa.");
+        }
+
+        var link = await _accountRepo.GetTelegramLinkByUserAsync(identity.UserId, ct);
+        if (link?.ChatId is not { } chatId)
+        {
+            return ServiceResult<TelegramTestMessageResponse>.BadRequest(
+                "Tu cuenta aún no tiene un Chat ID de Telegram vinculado. Genera un código y envía /vincular CODIGO al bot primero.");
+        }
+
+        var mode = _transport is HttpTelegramBotTransport ? "telegram_http" : "inmemory";
+        var text = $"[PRUEBA] Cuna Inteligente: Verificación de notificaciones activa para familia {membership.Email} ({DateTimeOffset.UtcNow:HH:mm:ss} UTC).";
+        var sent = await _transport.SendMessageAsync(chatId, text, ct);
+
+        await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
+            membership.FamilyId,
+            identity.UserId,
+            null,
+            sent ? "telegram_prueba_enviada" : "telegram_prueba_fallida",
+            clientIp,
+            $"chat:{chatId}",
+            DateTimeOffset.UtcNow), ct);
+
+        return ServiceResult<TelegramTestMessageResponse>.Ok(new TelegramTestMessageResponse(
+            sent,
+            chatId,
+            mode,
+            sent
+                ? "Mensaje de prueba entregado al Chat ID vinculado."
+                : "No se pudo entregar el mensaje de prueba; revisa la conectividad del bot y tu TELEGRAM_BOT_TOKEN."));
     }
 
     public async Task<ServiceResult<bool>> UnlinkMyTelegramAsync(
@@ -300,19 +501,33 @@ public sealed class TelegramBotService
             return;
         }
 
-        if (text.StartsWith("/start", StringComparison.OrdinalIgnoreCase))
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var commandToken = parts[0];
+        var atIdx = commandToken.IndexOf('@');
+        if (atIdx > 0)
         {
+            commandToken = commandToken[..atIdx];
+        }
+        var cmd = commandToken.ToLowerInvariant();
+
+        if (cmd == "/start")
+        {
+            if (parts.Length >= 2)
+            {
+                await HandleLinkAttemptAsync(chatId, parts[1], now, ct);
+                return;
+            }
+
             await _transport.SendMessageAsync(
                 chatId,
-                "Bienvenido al bot de Cuna Inteligente. Genera un código temporal (10 min) desde tu panel web y envía: /vincular CODIGO",
+                $"Bienvenido al bot de Cuna Inteligente. Genera un código temporal (10 min) desde tu panel web y envía: /vincular CODIGO (Chat ID actual: {chatId}).",
                 ct);
             return;
         }
 
-        if (text.StartsWith("/vincular", StringComparison.OrdinalIgnoreCase))
+        if (cmd == "/vincular")
         {
-            var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2 || parts[1].Length < 6)
+            if (parts.Length < 2)
             {
                 await _transport.SendMessageAsync(
                     chatId,
@@ -321,46 +536,27 @@ public sealed class TelegramBotService
                 return;
             }
 
-            var rawCode = parts[1].Trim();
-            var hash = CryptoTokenHelper.ComputeSha256Hex(rawCode);
-            var linked = await _accountRepo.CompleteTelegramLinkByCodeAsync(hash, chatId, now, ct);
+            await HandleLinkAttemptAsync(chatId, parts[1], now, ct);
+            return;
+        }
 
-            if (linked is null)
-            {
-                await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                    null,
-                    null,
-                    null,
-                    "telegram_vinculo_fallido",
-                    $"chat:{chatId}",
-                    "codigo_invalido_expirado_o_usado",
-                    now), ct);
-
-                await _transport.SendMessageAsync(
-                    chatId,
-                    "Código de vinculación inválido, expirado o bloqueado tras superar el límite de intentos.",
-                    ct);
-                return;
-            }
-
-            var membership = await _accountRepo.GetUserMembershipAsync(linked.UsuarioId, ct);
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership?.FamilyId,
-                linked.UsuarioId,
-                null,
-                "telegram_vinculado_rf38",
-                $"chat:{chatId}",
-                null,
-                now), ct);
-
+        if (cmd == "/mi_chat")
+        {
+            var existing = await _accountRepo.GetTelegramLinkByChatIdAsync(chatId, ct);
+            var linkedMembership = existing is not null
+                ? await _accountRepo.GetUserMembershipAsync(existing.UsuarioId, ct)
+                : null;
+            var statusLabel = linkedMembership is not null
+                ? $"vinculado a {linkedMembership.Email} ({linkedMembership.Rol})"
+                : "no vinculado";
             await _transport.SendMessageAsync(
                 chatId,
-                "Chat de Telegram vinculado correctamente a tu cuenta familiar (RF38). Usa /estado para consultar la cuna.",
+                $"Chat ID: {chatId}\nEstado: {statusLabel}.",
                 ct);
             return;
         }
 
-        if (text.StartsWith("/estado", StringComparison.OrdinalIgnoreCase))
+        if (cmd == "/estado")
         {
             // RF39: Solo responde a chats vinculados con membresía activa en usuarios
             var link = await _accountRepo.GetTelegramLinkByChatIdAsync(chatId, ct);
@@ -401,32 +597,89 @@ public sealed class TelegramBotService
             foreach (var c in cribs)
             {
                 var telemetry = await _deviceRepo.ListTelemetryForCribAsync(c.Id, ct);
+                var alerts = await _deviceRepo.ListAlertsForCribAsync(c.Id, ct);
                 var latest = telemetry.LastOrDefault();
                 var tempStr = latest?.TempC is { } t ? $"{t:F1} °C" : "S/D";
                 var humStr = latest?.Humedad is { } h ? $"{h:F1} %" : "S/D";
                 var massStr = latest?.MasaKg is { } m ? $"{m:F3} kg" : "S/D";
+                var recentAlert = alerts.LastOrDefault();
+                var alertSuffix = recentAlert is not null
+                    ? $", Última alerta={recentAlert.Mensaje ?? recentAlert.Tipo}"
+                    : "";
 
                 sb.AppendLine(
-                    $"- {c.Nombre}: conexión={c.EstadoConexion}, modo={c.ModoOperacion}, T={tempStr}, H={humStr}, Masa={massStr}");
+                    $"- {c.Nombre}: conexión={c.EstadoConexion}, modo={c.ModoOperacion}, T={tempStr}, H={humStr}, Masa={massStr}{alertSuffix}");
             }
 
             await _transport.SendMessageAsync(chatId, sb.ToString().TrimEnd(), ct);
             return;
         }
 
-        if (text.StartsWith("/ayuda", StringComparison.OrdinalIgnoreCase) ||
-            text.StartsWith("/help", StringComparison.OrdinalIgnoreCase))
+        if (cmd is "/ayuda" or "/help")
         {
             await _transport.SendMessageAsync(
                 chatId,
-                "Comandos disponibles de Cuna Inteligente:\n• /vincular CODIGO — Vincula tu chat de Telegram con tu cuenta familiar (código temporal de 10 min generado desde la web).\n• /estado — Consulta el estado en vivo de las cunas de tu familia (< 2 s).\n• /ayuda — Muestra esta información de ayuda.",
+                "Comandos disponibles de Cuna Inteligente:\n• /vincular CODIGO — Vincula tu chat de Telegram con tu cuenta familiar (código temporal de 10 min).\n• /estado — Consulta el estado en vivo de las cunas de tu familia (< 2 s).\n• /mi_chat — Muestra tu Chat ID y estado de vinculación.\n• /ayuda — Muestra esta información de ayuda.",
                 ct);
             return;
         }
 
         await _transport.SendMessageAsync(
             chatId,
-            "Comando no reconocido. Comandos disponibles: /vincular CODIGO, /estado, /ayuda",
+            "Comando no reconocido. Comandos disponibles: /vincular CODIGO, /estado, /mi_chat, /ayuda",
+            ct);
+    }
+
+    private async Task HandleLinkAttemptAsync(
+        long chatId,
+        string candidateCode,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var rawCode = candidateCode.Trim();
+        if (rawCode.Length < 6)
+        {
+            await _transport.SendMessageAsync(
+                chatId,
+                "Formato inválido. Usa: /vincular CODIGO (generado desde el panel web).",
+                ct);
+            return;
+        }
+
+        var hash = CryptoTokenHelper.ComputeSha256Hex(rawCode);
+        var linked = await _accountRepo.CompleteTelegramLinkByCodeAsync(hash, chatId, now, ct);
+
+        if (linked is null)
+        {
+            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
+                null,
+                null,
+                null,
+                "telegram_vinculo_fallido",
+                $"chat:{chatId}",
+                "codigo_invalido_expirado_o_usado",
+                now), ct);
+
+            await _transport.SendMessageAsync(
+                chatId,
+                "Código de vinculación inválido, expirado o bloqueado tras superar el límite de intentos.",
+                ct);
+            return;
+        }
+
+        var membership = await _accountRepo.GetUserMembershipAsync(linked.UsuarioId, ct);
+        await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
+            membership?.FamilyId,
+            linked.UsuarioId,
+            null,
+            "telegram_vinculado_rf38",
+            $"chat:{chatId}",
+            null,
+            now), ct);
+
+        await _transport.SendMessageAsync(
+            chatId,
+            "Chat de Telegram vinculado correctamente a tu cuenta familiar (RF38). Usa /estado para consultar la cuna.",
             ct);
     }
 
@@ -524,6 +777,7 @@ public sealed class TelegramPollingAndRemindersBackgroundService : BackgroundSer
     private readonly ITelegramBotTransport _transport;
     private readonly ILogger<TelegramPollingAndRemindersBackgroundService> _logger;
     private long _nextOffset = 1;
+    private DateTimeOffset _lastReminderCheckUtc = DateTimeOffset.MinValue;
 
     public TelegramPollingAndRemindersBackgroundService(
         TelegramBotService botService,
@@ -549,7 +803,12 @@ public sealed class TelegramPollingAndRemindersBackgroundService : BackgroundSer
                     await _botService.ProcessInboundCommandAsync(upd.ChatId, upd.Text, DateTimeOffset.UtcNow, stoppingToken);
                 }
 
-                await _botService.EvaluateFeedingRemindersAsync(DateTimeOffset.UtcNow, stoppingToken);
+                var now = DateTimeOffset.UtcNow;
+                if (now - _lastReminderCheckUtc >= TimeSpan.FromSeconds(60))
+                {
+                    await _botService.EvaluateFeedingRemindersAsync(now, stoppingToken);
+                    _lastReminderCheckUtc = now;
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

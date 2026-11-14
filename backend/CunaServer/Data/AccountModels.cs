@@ -97,7 +97,24 @@ public sealed record GenerateTelegramCodeResponse(
     string Codigo,
     DateTimeOffset ExpiraEn,
     string BotUsername,
-    string ComandoEjemplo);
+    string ComandoEjemplo,
+    string? DeepLinkUrl = null);
+
+public sealed record TelegramBotStatusResponse(
+    bool TokenConfigured,
+    string Mode,
+    bool BotReachable,
+    string BotUsername,
+    string? ResolvedUsername,
+    bool UserLinked,
+    long? UserChatId,
+    string Note);
+
+public sealed record TelegramTestMessageResponse(
+    bool Sent,
+    long? ChatId,
+    string Mode,
+    string Message);
 
 public sealed record FeedingReminderRecord(
     Guid Id,

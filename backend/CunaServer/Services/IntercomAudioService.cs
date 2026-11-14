@@ -40,18 +40,15 @@ public sealed class IntercomAudioService
         string? clientIp,
         CancellationToken ct)
     {
-        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
+        var (membership, forbidden) = await FamilyAuthorizationHelper.RequireMembershipAsync(
+            _accountRepo,
+            identity,
+            "intercom",
+            clientIp,
+            ct);
         if (membership is null)
         {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                null,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                "intercom_sin_familia",
-                DateTimeOffset.UtcNow), ct);
-            return ServiceResult<IntercomChunkResponse>.Forbidden("El usuario no pertenece a una familia activa.");
+            return ServiceResult<IntercomChunkResponse>.Forbidden(forbidden ?? "El usuario no pertenece a una familia activa.");
         }
 
         var central = await _deviceRepo.GetCentralDeviceForCribAsync(cunaId, ct);

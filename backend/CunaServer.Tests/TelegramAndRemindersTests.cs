@@ -2,11 +2,13 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using CunaServer.Data;
 using CunaServer.Services;
 using CunaServer.Telegram;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CunaServer.Tests;
 
@@ -170,6 +172,116 @@ public class TelegramAndRemindersTests
         var sentAfter2h = await botService.EvaluateFeedingRemindersAsync(t0.AddHours(2).AddMinutes(1), CancellationToken.None);
         Assert.Equal(1, sentAfter2h);
         Assert.Contains(tgTransport.GetSentMessages(), m => m.ChatId == 20001 && m.Text.Contains("Recordatorio de alimentación (RF18)"));
+    }
+
+    [Fact]
+    public async Task RF38_DeepLinkStart_And_StatusTestEndpoints_WorkEndToEnd()
+    {
+        await using var factory = CreateTestFactory(out _, out _, out var tgTransport);
+        using var client = factory.CreateClient();
+        var botService = factory.Services.GetRequiredService<TelegramBotService>();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia DeepLink", "Mamá", "F1"));
+
+        var statusBefore = await client.GetFromJsonAsync<TelegramBotStatusResponse>("/api/telegram/status");
+        Assert.NotNull(statusBefore);
+        Assert.False(statusBefore!.UserLinked);
+        Assert.Equal("inmemory", statusBefore.Mode);
+
+        // Enviar prueba antes de vincular -> 400 BadRequest
+        var unlinkedTestResp = await client.PostAsync("/api/telegram/test", null);
+        Assert.Equal(HttpStatusCode.BadRequest, unlinkedTestResp.StatusCode);
+
+        var codeResp = await client.PostAsync("/api/telegram/link-code", null);
+        var code = await codeResp.Content.ReadFromJsonAsync<GenerateTelegramCodeResponse>();
+        Assert.NotNull(code);
+        Assert.Contains("https://t.me/", code!.DeepLinkUrl);
+        Assert.Contains(code.Codigo, code.DeepLinkUrl);
+
+        // Deep-link /start CODIGO vincula automáticamente sin exigir segundo comando
+        var now = DateTimeOffset.UtcNow;
+        await botService.ProcessInboundCommandAsync(50683021112, $"/start {code.Codigo}", now, CancellationToken.None);
+        Assert.Contains(tgTransport.GetSentMessages(), m =>
+            m.ChatId == 50683021112 && m.Text.Contains("vinculado correctamente"));
+
+        await botService.ProcessInboundCommandAsync(50683021112, "/mi_chat", now, CancellationToken.None);
+        Assert.Contains(tgTransport.GetSentMessages(), m =>
+            m.ChatId == 50683021112 && m.Text.Contains("50683021112") && m.Text.Contains("principal@cuna.local"));
+
+        var testResp = await client.PostAsync("/api/telegram/test", null);
+        Assert.Equal(HttpStatusCode.OK, testResp.StatusCode);
+        var testBody = await testResp.Content.ReadFromJsonAsync<TelegramTestMessageResponse>();
+        Assert.NotNull(testBody);
+        Assert.True(testBody!.Sent);
+        Assert.Equal(50683021112, testBody.ChatId);
+        Assert.Contains(tgTransport.GetSentMessages(), m =>
+            m.ChatId == 50683021112 && m.Text.Contains("[PRUEBA]"));
+    }
+
+    [Fact]
+    public async Task HttpTelegramBotTransport_HandlesGetMeUpdatesSendMessage_And429Retry()
+    {
+        var sendAttempts = 0;
+        using var handler = new StubHttpMessageHandler((req, _) =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.EndsWith("/getMe", StringComparison.Ordinal))
+            {
+                return JsonResponse(HttpStatusCode.OK, """{"ok":true,"result":{"id":1001,"is_bot":true,"username":"CunasInteligentes_Modelado_Bot"}}""");
+            }
+
+            if (path.EndsWith("/getUpdates", StringComparison.Ordinal))
+            {
+                return JsonResponse(HttpStatusCode.OK, """{"ok":true,"result":[{"update_id":42,"message":{"chat":{"id":50683021112},"text":"/estado"}}]}""");
+            }
+
+            if (path.EndsWith("/sendMessage", StringComparison.Ordinal))
+            {
+                sendAttempts++;
+                if (sendAttempts == 1)
+                {
+                    return JsonResponse((HttpStatusCode)429, """{"ok":false,"parameters":{"retry_after":1}}""");
+                }
+                return JsonResponse(HttpStatusCode.OK, """{"ok":true,"result":{"message_id":7}}""");
+            }
+
+            return JsonResponse(HttpStatusCode.NotFound, """{"ok":false}""");
+        });
+
+        using var http = new HttpClient(handler);
+        var transport = new HttpTelegramBotTransport(
+            http,
+            "000000:TEST-TOKEN-NOT-REAL",
+            NullLogger<HttpTelegramBotTransport>.Instance,
+            "https://mock.telegram.local");
+
+        var probe = await transport.ProbeBotAsync(CancellationToken.None);
+        Assert.True(probe.TokenConfigured);
+        Assert.True(probe.Reachable);
+        Assert.Equal("CunasInteligentes_Modelado_Bot", probe.ResolvedUsername);
+
+        var updates = await transport.GetUpdatesAsync(1, CancellationToken.None);
+        Assert.Single(updates);
+        Assert.Equal(50683021112, updates[0].ChatId);
+        Assert.Equal("/estado", updates[0].Text);
+
+        var delivered = await transport.SendMessageAsync(50683021112, "Alerta prueba", CancellationToken.None);
+        Assert.True(delivered);
+        Assert.Equal(2, sendAttempts);
+    }
+
+    private static HttpResponseMessage JsonResponse(HttpStatusCode status, string json)
+        => new(status)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> responder)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(responder(request, cancellationToken));
     }
 
     private sealed class FakeTelegramJwtValidator : IJwtTokenValidator

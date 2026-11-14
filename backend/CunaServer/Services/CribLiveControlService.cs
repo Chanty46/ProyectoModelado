@@ -611,57 +611,22 @@ public sealed class CribLiveControlService
         }
     }
 
-    private async Task<(UserMembership? Membership, CribRecord? Crib, string? ForbiddenMessage)> VerifyFamilyCribMembershipAsync(
+    private Task<(UserMembership? Membership, CribRecord? Crib, string? ForbiddenMessage)> VerifyFamilyCribMembershipAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
         string attemptedAction,
         bool requirePrincipal,
         string? clientIp,
         CancellationToken ct)
-    {
-        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
-        if (membership is null)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                null,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"sin_familia:{attemptedAction}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: el usuario no pertenece a una familia activa.");
-        }
-
-        if (requirePrincipal && !string.Equals(membership.Rol, UserRoles.Principal, StringComparison.Ordinal))
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"rol_secundario:{attemptedAction}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado (RF03): solo el Usuario Principal puede modificar umbrales.");
-        }
-
-        var crib = await _deviceRepo.GetCribByIdAsync(cunaId, ct);
-        if (crib is null || crib.FamilyId != membership.FamilyId)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"cuna_ajena:{attemptedAction}:{cunaId}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: la cuna solicitada no pertenece a tu familia.");
-        }
-
-        return (membership, crib, null);
-    }
+        => FamilyAuthorizationHelper.RequireFamilyCribAccessAsync(
+            _accountRepo,
+            _deviceRepo,
+            identity,
+            cunaId,
+            attemptedAction,
+            requirePrincipal,
+            clientIp,
+            ct);
 }
 
 public sealed class CribWatchdogBackgroundService : BackgroundService

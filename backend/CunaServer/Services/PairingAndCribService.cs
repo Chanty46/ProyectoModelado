@@ -407,39 +407,15 @@ public sealed class PairingAndCribService
         return null;
     }
 
-    private async Task<(UserMembership? Membership, string? ForbiddenMessage)> RequirePrincipalAsync(
+    private Task<(UserMembership? Membership, string? ForbiddenMessage)> RequirePrincipalAsync(
         AuthenticatedIdentity identity,
         string attemptedAction,
         string? clientIp,
         CancellationToken ct)
-    {
-        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
-        if (membership is null)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                null,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"sin_familia:{attemptedAction}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, "Acceso denegado: el usuario no pertenece a una familia activa.");
-        }
-
-        if (!string.Equals(membership.Rol, UserRoles.Principal, StringComparison.Ordinal))
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"rol_secundario:{attemptedAction}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, "Acceso denegado (RF03): se requieren privilegios de Usuario Principal.");
-        }
-
-        return (membership, null);
-    }
+        => FamilyAuthorizationHelper.RequirePrincipalAsync(
+            _accountRepo,
+            identity,
+            attemptedAction,
+            clientIp,
+            ct);
 }

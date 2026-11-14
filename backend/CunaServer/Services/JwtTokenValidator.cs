@@ -12,11 +12,13 @@ public interface IJwtTokenValidator
 
 public sealed class SupabaseJwksTokenValidator : IJwtTokenValidator
 {
+    private sealed record CachedJwk(string? Kid, string Kty, ECDsa? EcKey, RSA? RsaKey);
+    private sealed record CachedJwksSnapshot(IReadOnlyList<CachedJwk> Keys, DateTimeOffset ExpiresAt);
+
     private readonly HttpClient _httpClient;
     private readonly string _jwksUrl;
     private readonly SemaphoreSlim _cacheLock = new(1, 1);
-    private string? _cachedJwksJson;
-    private DateTimeOffset _cacheExpiresAt = DateTimeOffset.MinValue;
+    private volatile CachedJwksSnapshot? _cachedSnapshot;
 
     public SupabaseJwksTokenValidator(HttpClient httpClient, IConfiguration configuration, string? initialJwksJson = null)
     {
@@ -26,8 +28,9 @@ public sealed class SupabaseJwksTokenValidator : IJwtTokenValidator
 
         if (!string.IsNullOrWhiteSpace(initialJwksJson))
         {
-            _cachedJwksJson = initialJwksJson;
-            _cacheExpiresAt = DateTimeOffset.UtcNow.AddHours(24);
+            _cachedSnapshot = new CachedJwksSnapshot(
+                ParseJwksKeys(initialJwksJson),
+                DateTimeOffset.UtcNow.AddHours(24));
         }
     }
 
@@ -62,13 +65,13 @@ public sealed class SupabaseJwksTokenValidator : IJwtTokenValidator
                 return null;
             }
 
-            var jwksJson = await GetJwksJsonAsync(ct);
-            if (string.IsNullOrWhiteSpace(jwksJson))
+            var jwksSnapshot = await GetJwksSnapshotAsync(ct);
+            if (jwksSnapshot is null || jwksSnapshot.Keys.Count == 0)
             {
                 return null;
             }
 
-            if (!VerifySignatureWithJwks(jwksJson, alg, kid, signedBytes, signatureBytes))
+            if (!VerifySignatureWithCachedKeys(jwksSnapshot.Keys, alg, kid, signedBytes, signatureBytes))
             {
                 return null;
             }
@@ -112,30 +115,34 @@ public sealed class SupabaseJwksTokenValidator : IJwtTokenValidator
         }
     }
 
-    private async Task<string?> GetJwksJsonAsync(CancellationToken ct)
+    private async Task<CachedJwksSnapshot?> GetJwksSnapshotAsync(CancellationToken ct)
     {
-        if (_cachedJwksJson is not null && DateTimeOffset.UtcNow < _cacheExpiresAt)
+        var current = _cachedSnapshot;
+        if (current is not null && DateTimeOffset.UtcNow < current.ExpiresAt)
         {
-            return _cachedJwksJson;
+            return current;
         }
 
         await _cacheLock.WaitAsync(ct);
         try
         {
-            if (_cachedJwksJson is not null && DateTimeOffset.UtcNow < _cacheExpiresAt)
+            current = _cachedSnapshot;
+            if (current is not null && DateTimeOffset.UtcNow < current.ExpiresAt)
             {
-                return _cachedJwksJson;
+                return current;
             }
 
             using var response = await _httpClient.GetAsync(_jwksUrl, ct);
             if (!response.IsSuccessStatusCode)
             {
-                return _cachedJwksJson;
+                return current;
             }
 
-            _cachedJwksJson = await response.Content.ReadAsStringAsync(ct);
-            _cacheExpiresAt = DateTimeOffset.UtcNow.AddMinutes(30);
-            return _cachedJwksJson;
+            var json = await response.Content.ReadAsStringAsync(ct);
+            var parsedKeys = ParseJwksKeys(json);
+            var refreshed = new CachedJwksSnapshot(parsedKeys, DateTimeOffset.UtcNow.AddMinutes(30));
+            _cachedSnapshot = refreshed;
+            return refreshed;
         }
         finally
         {
@@ -143,69 +150,97 @@ public sealed class SupabaseJwksTokenValidator : IJwtTokenValidator
         }
     }
 
-    private static bool VerifySignatureWithJwks(
-        string jwksJson,
-        string alg,
-        string? kid,
-        byte[] signedData,
-        byte[] signature)
+    private static IReadOnlyList<CachedJwk> ParseJwksKeys(string jwksJson)
     {
         using var jwksDoc = JsonDocument.Parse(jwksJson);
         if (!jwksDoc.RootElement.TryGetProperty("keys", out var keysElement) ||
             keysElement.ValueKind != JsonValueKind.Array)
         {
-            return false;
+            return Array.Empty<CachedJwk>();
         }
 
+        var keys = new List<CachedJwk>();
         foreach (var key in keysElement.EnumerateArray())
         {
-            if (!string.IsNullOrWhiteSpace(kid) &&
-                key.TryGetProperty("kid", out var keyKid) &&
-                !string.Equals(keyKid.GetString(), kid, StringComparison.Ordinal))
+            var kid = key.TryGetProperty("kid", out var kidProp) ? kidProp.GetString() : null;
+            var kty = key.TryGetProperty("kty", out var ktyProp) ? ktyProp.GetString() : null;
+            if (string.IsNullOrWhiteSpace(kty))
             {
                 continue;
             }
 
-            var kty = key.TryGetProperty("kty", out var ktyProp) ? ktyProp.GetString() : null;
-            if (alg == "ES256" && kty == "EC")
+            if (kty == "EC" &&
+                key.TryGetProperty("x", out var xProp) &&
+                key.TryGetProperty("y", out var yProp))
             {
-                var x = key.GetProperty("x").GetString()!;
-                var y = key.GetProperty("y").GetString()!;
-                var ecParams = new ECParameters
+                var x = xProp.GetString();
+                var y = yProp.GetString();
+                if (!string.IsNullOrWhiteSpace(x) && !string.IsNullOrWhiteSpace(y))
                 {
-                    Curve = ECCurve.NamedCurves.nistP256,
-                    Q = new ECPoint
+                    var ecParams = new ECParameters
                     {
-                        X = CryptoTokenHelper.Base64UrlDecode(x),
-                        Y = CryptoTokenHelper.Base64UrlDecode(y)
-                    }
-                };
-
-                using var ecdsa = ECDsa.Create(ecParams);
-                if (ecdsa.VerifyData(
-                        signedData,
-                        signature,
-                        HashAlgorithmName.SHA256,
-                        DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
-                {
-                    return true;
+                        Curve = ECCurve.NamedCurves.nistP256,
+                        Q = new ECPoint
+                        {
+                            X = CryptoTokenHelper.Base64UrlDecode(x),
+                            Y = CryptoTokenHelper.Base64UrlDecode(y)
+                        }
+                    };
+                    keys.Add(new CachedJwk(kid, "EC", ECDsa.Create(ecParams), null));
                 }
             }
-            else if (alg == "RS256" && kty == "RSA")
+            else if (kty == "RSA" &&
+                key.TryGetProperty("n", out var nProp) &&
+                key.TryGetProperty("e", out var eProp))
             {
-                var n = key.GetProperty("n").GetString()!;
-                var e = key.GetProperty("e").GetString()!;
-                var rsaParams = new RSAParameters
+                var n = nProp.GetString();
+                var e = eProp.GetString();
+                if (!string.IsNullOrWhiteSpace(n) && !string.IsNullOrWhiteSpace(e))
                 {
-                    Modulus = CryptoTokenHelper.Base64UrlDecode(n),
-                    Exponent = CryptoTokenHelper.Base64UrlDecode(e)
-                };
-
-                using var rsa = RSA.Create(rsaParams);
-                if (rsa.VerifyData(signedData, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))
-                {
-                    return true;
+                    var rsaParams = new RSAParameters
+                    {
+                        Modulus = CryptoTokenHelper.Base64UrlDecode(n),
+                        Exponent = CryptoTokenHelper.Base64UrlDecode(e)
+                    };
+                    keys.Add(new CachedJwk(kid, "RSA", null, RSA.Create(rsaParams)));
                 }
+            }
+        }
+
+        return keys;
+    }
+
+    private static bool VerifySignatureWithCachedKeys(
+        IReadOnlyList<CachedJwk> keys,
+        string alg,
+        string? kid,
+        byte[] signedData,
+        byte[] signature)
+    {
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var key = keys[i];
+            if (!string.IsNullOrWhiteSpace(kid) &&
+                !string.IsNullOrWhiteSpace(key.Kid) &&
+                !string.Equals(key.Kid, kid, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (alg == "ES256" && key.EcKey is not null &&
+                key.EcKey.VerifyData(
+                    signedData,
+                    signature,
+                    HashAlgorithmName.SHA256,
+                    DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
+            {
+                return true;
+            }
+
+            if (alg == "RS256" && key.RsaKey is not null &&
+                key.RsaKey.VerifyData(signedData, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))
+            {
+                return true;
             }
         }
 

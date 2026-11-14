@@ -85,16 +85,22 @@ public interface IDeviceTelemetryRepository
 
 public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryRepository
 {
+    private const int MaxTelemetryPerCrib = 2880;
+    private const int MaxAlertsPerCrib = 1000;
+    private const int MaxToyUsagePerCrib = 1000;
+    private const int MaxAuditEntries = 2000;
+
     private readonly ConcurrentDictionary<string, RegisteredDevice> _devicesByDeviceId = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<Guid, string> _deviceIdByRowId = new();
     private readonly ConcurrentDictionary<string, ClaimableDeviceRecord> _claimableDevices = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<Guid, CribRecord> _cribs = new();
     private readonly ConcurrentDictionary<Guid, BabyRecord> _babies = new();
     private readonly ConcurrentDictionary<Guid, CribConfig> _cribConfigs = new();
-    private readonly ConcurrentQueue<TelemetryRecord> _telemetry = new();
-    private readonly ConcurrentQueue<EventAlertRecord> _alerts = new();
-    private readonly ConcurrentQueue<ToyUsageRecord> _toyUsage = new();
+    private readonly ConcurrentDictionary<Guid, ConcurrentQueue<TelemetryRecord>> _telemetryByCrib = new();
+    private readonly ConcurrentDictionary<Guid, ConcurrentQueue<EventAlertRecord>> _alertsByCrib = new();
+    private readonly ConcurrentDictionary<Guid, ConcurrentQueue<ToyUsageRecord>> _toyUsageByCrib = new();
     private readonly ConcurrentQueue<SecurityAuditEntry> _securityAudit = new();
-    private readonly ConcurrentQueue<CaregiverAuditLogEntry> _caregiverActions = new();
+    private readonly ConcurrentDictionary<Guid, ConcurrentQueue<CaregiverAuditLogEntry>> _caregiverActionsByFamily = new();
     private readonly ConcurrentDictionary<Guid, FeedingSessionRecord> _feedingSessions = new();
     private readonly ConcurrentDictionary<Guid, SleepSessionRecord> _sleepSessions = new();
     private readonly List<SongCatalogItem> _songs = new();
@@ -149,7 +155,7 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
         {
             var tokenHash = CryptoTokenHelper.ComputeSha256Hex(d.RawDemoToken);
             var claimHash = CryptoTokenHelper.ComputeSha256Hex(d.RawClaimCode);
-            _devicesByDeviceId[d.DeviceId] = new RegisteredDevice(
+            var registered = new RegisteredDevice(
                 d.Id,
                 d.DeviceId,
                 cunaId,
@@ -161,6 +167,8 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
                 0,
                 null,
                 "1.0.0-sim");
+            _devicesByDeviceId[d.DeviceId] = registered;
+            _deviceIdByRowId[d.Id] = d.DeviceId;
 
             _claimableDevices[d.DeviceId] = new ClaimableDeviceRecord(
                 d.Id,
@@ -195,16 +203,16 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
                 """[{"freq_hz":262,"ms":400},{"freq_hz":262,"ms":400},{"freq_hz":392,"ms":400},{"freq_hz":392,"ms":400},{"freq_hz":440,"ms":400},{"freq_hz":440,"ms":400},{"freq_hz":392,"ms":800}]"""),
             new SongCatalogItem(
                 Guid.Parse("cccccccc-0002-4000-8000-000000000002"),
-                "cancion_cuna_brahms",
+                "brahms",
                 "Canción de Cuna (Brahms)",
                 45,
                 """[{"freq_hz":330,"ms":400},{"freq_hz":330,"ms":400},{"freq_hz":392,"ms":800},{"freq_hz":330,"ms":400},{"freq_hz":330,"ms":400},{"freq_hz":392,"ms":800}]"""),
             new SongCatalogItem(
                 Guid.Parse("cccccccc-0003-4000-8000-000000000003"),
-                "arrullo_suave",
-                "Arrullo Nocturno Suave",
-                30,
-                """[{"freq_hz":294,"ms":500},{"freq_hz":330,"ms":500},{"freq_hz":262,"ms":1000}]""")
+                "arrorro",
+                "Arrorró Mi Niño",
+                40,
+                """[{"freq_hz":294,"ms":500},{"freq_hz":330,"ms":500},{"freq_hz":349,"ms":400},{"freq_hz":392,"ms":600},{"freq_hz":262,"ms":800}]""")
         });
     }
 
@@ -234,6 +242,7 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
     public void RegisterOrUpdateDevice(RegisteredDevice device)
     {
         _devicesByDeviceId[device.DeviceId] = device;
+        _deviceIdByRowId[device.Id] = device.DeviceId;
     }
 
     public IReadOnlyList<SecurityAuditEntry> GetSecurityAuditSnapshot() => _securityAudit.ToList();
@@ -286,8 +295,8 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
     {
         lock (_seqLock)
         {
-            var entry = _devicesByDeviceId.Values.FirstOrDefault(d => d.Id == deviceRowId);
-            if (entry is not null)
+            if (_deviceIdByRowId.TryGetValue(deviceRowId, out var devId) &&
+                _devicesByDeviceId.TryGetValue(devId, out var entry))
             {
                 _devicesByDeviceId[entry.DeviceId] = entry with
                 {
@@ -329,8 +338,9 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
 
         lock (_seqLock)
         {
-            var entry = _devicesByDeviceId.Values.FirstOrDefault(d => d.Id == deviceRowId);
-            if (entry is null || seq <= entry.UltimoSeq)
+            if (!_deviceIdByRowId.TryGetValue(deviceRowId, out var devId) ||
+                !_devicesByDeviceId.TryGetValue(devId, out var entry) ||
+                seq <= entry.UltimoSeq)
             {
                 return Task.FromResult(false);
             }
@@ -342,44 +352,70 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
 
     public Task SaveTelemetryAsync(TelemetryRecord record, CancellationToken ct)
     {
-        _telemetry.Enqueue(record);
+        var queue = _telemetryByCrib.GetOrAdd(record.CunaId, _ => new ConcurrentQueue<TelemetryRecord>());
+        EnqueueBounded(queue, MaxTelemetryPerCrib, record);
         return Task.CompletedTask;
     }
 
     public Task SaveEventAlertAsync(EventAlertRecord record, CancellationToken ct)
     {
-        _alerts.Enqueue(record);
+        var queue = _alertsByCrib.GetOrAdd(record.CunaId, _ => new ConcurrentQueue<EventAlertRecord>());
+        EnqueueBounded(queue, MaxAlertsPerCrib, record);
         return Task.CompletedTask;
     }
 
     public Task SaveToyUsageAsync(ToyUsageRecord record, CancellationToken ct)
     {
-        _toyUsage.Enqueue(record);
+        var queue = _toyUsageByCrib.GetOrAdd(record.CunaId, _ => new ConcurrentQueue<ToyUsageRecord>());
+        EnqueueBounded(queue, MaxToyUsagePerCrib, record);
         return Task.CompletedTask;
     }
 
     public Task LogSecurityEventAsync(SecurityAuditEntry entry, CancellationToken ct)
     {
-        _securityAudit.Enqueue(entry);
+        EnqueueBounded(_securityAudit, MaxAuditEntries, entry);
         return Task.CompletedTask;
     }
 
     public Task<IReadOnlyList<TelemetryRecord>> ListTelemetryForCribAsync(Guid cunaId, CancellationToken ct)
     {
-        var list = _telemetry.Where(t => t.CunaId == cunaId).OrderBy(t => t.Seq).ToList();
+        if (!_telemetryByCrib.TryGetValue(cunaId, out var queue))
+        {
+            return Task.FromResult<IReadOnlyList<TelemetryRecord>>(Array.Empty<TelemetryRecord>());
+        }
+
+        var list = queue.OrderBy(t => t.Seq).ToList();
         return Task.FromResult<IReadOnlyList<TelemetryRecord>>(list);
     }
 
     public Task<IReadOnlyList<EventAlertRecord>> ListAlertsForCribAsync(Guid cunaId, CancellationToken ct)
     {
-        var list = _alerts.Where(a => a.CunaId == cunaId).OrderBy(a => a.Ts).ToList();
+        if (!_alertsByCrib.TryGetValue(cunaId, out var queue))
+        {
+            return Task.FromResult<IReadOnlyList<EventAlertRecord>>(Array.Empty<EventAlertRecord>());
+        }
+
+        var list = queue.OrderBy(a => a.Ts).ToList();
         return Task.FromResult<IReadOnlyList<EventAlertRecord>>(list);
     }
 
     public Task<IReadOnlyList<ToyUsageRecord>> ListToyUsageForCribAsync(Guid cunaId, CancellationToken ct)
     {
-        var list = _toyUsage.Where(u => u.CunaId == cunaId).OrderBy(u => u.Inicio).ToList();
+        if (!_toyUsageByCrib.TryGetValue(cunaId, out var queue))
+        {
+            return Task.FromResult<IReadOnlyList<ToyUsageRecord>>(Array.Empty<ToyUsageRecord>());
+        }
+
+        var list = queue.OrderBy(u => u.Inicio).ToList();
         return Task.FromResult<IReadOnlyList<ToyUsageRecord>>(list);
+    }
+
+    private static void EnqueueBounded<T>(ConcurrentQueue<T> queue, int maxItems, T item)
+    {
+        queue.Enqueue(item);
+        while (queue.Count > maxItems && queue.TryDequeue(out _))
+        {
+        }
     }
 
     public Task<ClaimableDeviceRecord?> GetClaimableDeviceAsync(string deviceId, CancellationToken ct)
@@ -495,6 +531,7 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
                 0,
                 null,
                 current.FwVersion);
+            _deviceIdByRowId[current.Id] = current.DeviceId;
 
             return Task.FromResult(updatedClaimable);
         }
@@ -733,13 +770,19 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
 
     public Task LogCaregiverActionAsync(CaregiverAuditLogEntry entry, CancellationToken ct)
     {
-        _caregiverActions.Enqueue(entry);
+        var queue = _caregiverActionsByFamily.GetOrAdd(entry.FamilyId, _ => new ConcurrentQueue<CaregiverAuditLogEntry>());
+        EnqueueBounded(queue, MaxAuditEntries, entry);
         return Task.CompletedTask;
     }
 
     public Task<IReadOnlyList<CaregiverAuditLogEntry>> ListCaregiverActionsAsync(Guid familyId, CancellationToken ct)
     {
-        var list = _caregiverActions.Where(a => a.FamilyId == familyId).OrderBy(a => a.Ts).ToList();
+        if (!_caregiverActionsByFamily.TryGetValue(familyId, out var queue))
+        {
+            return Task.FromResult<IReadOnlyList<CaregiverAuditLogEntry>>(Array.Empty<CaregiverAuditLogEntry>());
+        }
+
+        var list = queue.OrderBy(a => a.Ts).ToList();
         return Task.FromResult<IReadOnlyList<CaregiverAuditLogEntry>>(list);
     }
 

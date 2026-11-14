@@ -246,6 +246,27 @@ public sealed class FeedingHistoryAndToysService
             return ServiceResult<SleepSessionRecord>.BadRequest("El número de interrupciones no puede ser negativo.");
         }
 
+        if (request.CunaId != Guid.Empty)
+        {
+            var crib = await _deviceRepo.GetCribByIdAsync(request.CunaId, ct);
+            if (crib is null || crib.FamilyId != membership.FamilyId)
+            {
+                await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
+                    membership.FamilyId,
+                    identity.UserId,
+                    null,
+                    "acceso_denegado_403",
+                    clientIp,
+                    $"cuna_ajena:registrar_sueno_rf30:{request.CunaId}",
+                    DateTimeOffset.UtcNow), ct);
+                return ServiceResult<SleepSessionRecord>.Forbidden("Acceso denegado: la cuna no pertenece a tu familia.");
+            }
+        }
+        else
+        {
+            return ServiceResult<SleepSessionRecord>.BadRequest("Se requiere el identificador válido de la cuna.");
+        }
+
         var created = await _deviceRepo.CreateSleepSessionAsync(
             bebeId,
             request.CunaId,
@@ -431,6 +452,7 @@ public sealed class FeedingHistoryAndToysService
         var central = await _deviceRepo.GetCentralDeviceForCribAsync(cunaId, ct);
         if (central is not null)
         {
+            using var notesDoc = song is not null ? JsonDocument.Parse(song.NotasJson) : null;
             await _tcpServer.SendCommandAsync(
                 central.DeviceId,
                 "song_play",
@@ -439,7 +461,7 @@ public sealed class FeedingHistoryAndToysService
                     action = accion,
                     song = song?.Codigo ?? request.Codigo,
                     duration_s = song?.DuracionSegundos ?? 0,
-                    notes = song is not null ? JsonDocument.Parse(song.NotasJson).RootElement : (object?)null
+                    notes = notesDoc?.RootElement
                 },
                 requireAck: false,
                 ct: ct);
@@ -694,79 +716,34 @@ public sealed class FeedingHistoryAndToysService
         return chars.Length == 0 ? "bebe" : new string(chars).ToLowerInvariant();
     }
 
-    private async Task<(UserMembership? Membership, BabyRecord? Baby, string? ForbiddenMessage)> VerifyBabyAccessAsync(
+    private Task<(UserMembership? Membership, BabyRecord? Baby, string? ForbiddenMessage)> VerifyBabyAccessAsync(
         AuthenticatedIdentity identity,
         Guid bebeId,
         string action,
         string? clientIp,
         CancellationToken ct)
-    {
-        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
-        if (membership is null)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                null,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"sin_familia:{action}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: el usuario no pertenece a una familia activa.");
-        }
+        => FamilyAuthorizationHelper.RequireFamilyBabyAccessAsync(
+            _accountRepo,
+            _deviceRepo,
+            identity,
+            bebeId,
+            action,
+            clientIp,
+            ct);
 
-        var baby = await _deviceRepo.GetBabyByIdAsync(bebeId, ct);
-        if (baby is null || baby.FamilyId != membership.FamilyId)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"bebe_ajeno:{action}:{bebeId}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: el perfil de bebé no pertenece a tu familia.");
-        }
-
-        return (membership, baby, null);
-    }
-
-    private async Task<(UserMembership? Membership, CribRecord? Crib, string? ForbiddenMessage)> VerifyCribAccessAsync(
+    private Task<(UserMembership? Membership, CribRecord? Crib, string? ForbiddenMessage)> VerifyCribAccessAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
         string action,
         string? clientIp,
         CancellationToken ct)
-    {
-        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
-        if (membership is null)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                null,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"sin_familia:{action}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: el usuario no pertenece a una familia activa.");
-        }
-
-        var crib = await _deviceRepo.GetCribByIdAsync(cunaId, ct);
-        if (crib is null || crib.FamilyId != membership.FamilyId)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"cuna_ajena:{action}:{cunaId}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: la cuna no pertenece a tu familia.");
-        }
-
-        return (membership, crib, null);
-    }
+        => FamilyAuthorizationHelper.RequireFamilyCribAccessAsync(
+            _accountRepo,
+            _deviceRepo,
+            identity,
+            cunaId,
+            action,
+            requirePrincipal: false,
+            clientIp,
+            ct);
 }

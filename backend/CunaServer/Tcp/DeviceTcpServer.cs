@@ -179,6 +179,7 @@ public sealed class DeviceTcpServer : BackgroundService
             }
 
             await using var stream = client.GetStream();
+            using var lineReader = new TcpLineReader(stream);
             var session = new ConnectedDeviceSession(client, stream);
 
             RegisteredDevice? authenticatedDevice = null;
@@ -197,7 +198,7 @@ public sealed class DeviceTcpServer : BackgroundService
                     bool eos;
                     try
                     {
-                        (rawLine, exceeded, eos) = await TcpProtocolParser.ReadBoundedLineAsync(stream, helloTimeoutCts.Token);
+                        (rawLine, exceeded, eos) = await lineReader.ReadLineAsync(helloTimeoutCts.Token);
                     }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                     {
@@ -220,17 +221,16 @@ public sealed class DeviceTcpServer : BackgroundService
                     if (!TcpProtocolParser.TryParseEnvelope(rawLine!, out var env, out var errCode, out var errMsg))
                     {
                         await RecordValidationFailureAsync(null, null, remoteIp, $"sobre_invalido:{errCode}", ct);
-                        await SendErrorAsync(session, errCode ?? "invalid_envelope", errMsg ?? "Mensaje inválido.", ct);
-                        if (errCode == "unsupported_version")
+                        var stop = errCode == "unsupported_version";
+                        failedHelloCountOnConnection++;
+                        if (stop)
                         {
+                            await SendErrorAsync(session, errCode ?? "invalid_envelope", errMsg ?? "Mensaje inválido.", ct);
                             return;
                         }
 
-                        failedHelloCountOnConnection++;
-                        if (RegisterIpHelloFailure(remoteIp) >= _options.MaxFailedHelloAttempts ||
-                            failedHelloCountOnConnection >= _options.MaxFailedHelloAttempts)
+                        if (await HandleHelloFailureAsync(session, remoteIp, failedHelloCountOnConnection, errCode ?? "invalid_envelope", errMsg ?? "Mensaje inválido.", ct))
                         {
-                            await RecordIpBlockedAsync(remoteIp, ct);
                             return;
                         }
                         continue;
@@ -239,11 +239,8 @@ public sealed class DeviceTcpServer : BackgroundService
                     if (env!.T != "hello")
                     {
                         failedHelloCountOnConnection++;
-                        await SendErrorAsync(session, "hello_required", "El primer mensaje debe ser 'hello'.", ct);
-                        if (RegisterIpHelloFailure(remoteIp) >= _options.MaxFailedHelloAttempts ||
-                            failedHelloCountOnConnection >= _options.MaxFailedHelloAttempts)
+                        if (await HandleHelloFailureAsync(session, remoteIp, failedHelloCountOnConnection, "hello_required", "El primer mensaje debe ser 'hello'.", ct))
                         {
-                            await RecordIpBlockedAsync(remoteIp, ct);
                             return;
                         }
                         continue;
@@ -258,11 +255,8 @@ public sealed class DeviceTcpServer : BackgroundService
                             out var helloErr))
                     {
                         failedHelloCountOnConnection++;
-                        await SendErrorAsync(session, "invalid_hello", helloErr ?? "Datos de hello inválidos.", ct);
-                        if (RegisterIpHelloFailure(remoteIp) >= _options.MaxFailedHelloAttempts ||
-                            failedHelloCountOnConnection >= _options.MaxFailedHelloAttempts)
+                        if (await HandleHelloFailureAsync(session, remoteIp, failedHelloCountOnConnection, "invalid_hello", helloErr ?? "Datos de hello inválidos.", ct))
                         {
-                            await RecordIpBlockedAsync(remoteIp, ct);
                             return;
                         }
                         continue;
@@ -288,12 +282,8 @@ public sealed class DeviceTcpServer : BackgroundService
                             $"device_id={deviceId}",
                             DateTimeOffset.UtcNow), ct);
 
-                        await SendErrorAsync(session, "auth_failed", "Autenticación de dispositivo rechazada.", ct);
-
-                        if (RegisterIpHelloFailure(remoteIp) >= _options.MaxFailedHelloAttempts ||
-                            failedHelloCountOnConnection >= _options.MaxFailedHelloAttempts)
+                        if (await HandleHelloFailureAsync(session, remoteIp, failedHelloCountOnConnection, "auth_failed", "Autenticación de dispositivo rechazada.", ct))
                         {
-                            await RecordIpBlockedAsync(remoteIp, ct);
                             return;
                         }
                         continue;
@@ -355,7 +345,7 @@ public sealed class DeviceTcpServer : BackgroundService
                 // 2. Bucle principal de mensajes del dispositivo autenticado
                 while (!ct.IsCancellationRequested)
                 {
-                    var (rawLine, exceeded, eos) = await TcpProtocolParser.ReadBoundedLineAsync(stream, ct);
+                    var (rawLine, exceeded, eos) = await lineReader.ReadLineAsync(ct);
                     if (eos)
                     {
                         break;
@@ -620,6 +610,25 @@ public sealed class DeviceTcpServer : BackgroundService
             DateTimeOffset.UtcNow), ct);
     }
 
+    private async Task<bool> HandleHelloFailureAsync(
+        ConnectedDeviceSession session,
+        string remoteIp,
+        int failedHelloCountOnConnection,
+        string errorCode,
+        string errorMessage,
+        CancellationToken ct)
+    {
+        var shouldBlock = RegisterIpHelloFailure(remoteIp) >= _options.MaxFailedHelloAttempts ||
+                          failedHelloCountOnConnection >= _options.MaxFailedHelloAttempts;
+        if (shouldBlock)
+        {
+            await RecordIpBlockedAsync(remoteIp, ct);
+        }
+
+        await SendErrorAsync(session, errorCode, errorMessage, ct);
+        return shouldBlock;
+    }
+
     private Task RecordIpBlockedAsync(string remoteIp, CancellationToken ct)
     {
         return _repository.LogSecurityEventAsync(new SecurityAuditEntry(
@@ -639,9 +648,15 @@ public sealed class DeviceTcpServer : BackgroundService
             return false;
         }
 
-        if (state.BlockedUntil is { } until && DateTimeOffset.UtcNow < until)
+        var now = DateTimeOffset.UtcNow;
+        if (state.BlockedUntil is { } until)
         {
-            return true;
+            if (now < until)
+            {
+                return true;
+            }
+
+            _ipFailures.TryRemove(new KeyValuePair<string, IpFailureState>(ip, state));
         }
 
         return false;
@@ -650,24 +665,42 @@ public sealed class DeviceTcpServer : BackgroundService
     private int RegisterIpHelloFailure(string ip)
     {
         var now = DateTimeOffset.UtcNow;
+        if (_ipFailures.Count > 128)
+        {
+            PruneExpiredIpFailures(now);
+        }
+
         var updated = _ipFailures.AddOrUpdate(
             ip,
-            _ => new IpFailureState(1, _options.MaxFailedHelloAttempts <= 1 ? now.Add(_options.IpBlockDuration) : null),
+            _ => new IpFailureState(1, _options.MaxFailedHelloAttempts <= 1 ? now.Add(_options.IpBlockDuration) : null, now),
             (_, prev) =>
             {
                 if (prev.BlockedUntil is { } until && now >= until)
                 {
-                    return new IpFailureState(1, null);
+                    return new IpFailureState(1, null, now);
                 }
 
                 var nextCount = prev.Count + 1;
                 var blockedUntil = nextCount >= _options.MaxFailedHelloAttempts
                     ? now.Add(_options.IpBlockDuration)
                     : prev.BlockedUntil;
-                return new IpFailureState(nextCount, blockedUntil);
+                return new IpFailureState(nextCount, blockedUntil, now);
             });
 
         return updated.Count;
+    }
+
+    private void PruneExpiredIpFailures(DateTimeOffset now)
+    {
+        foreach (var entry in _ipFailures)
+        {
+            var expiredBlock = entry.Value.BlockedUntil is { } until && now >= until;
+            var staleUnblocked = entry.Value.BlockedUntil is null && now - entry.Value.LastFailureUtc >= _options.IpBlockDuration;
+            if (expiredBlock || staleUnblocked)
+            {
+                _ipFailures.TryRemove(entry);
+            }
+        }
     }
 
     private void ClearIpFailures(string ip)
@@ -704,7 +737,7 @@ public sealed class DeviceTcpServer : BackgroundService
         return opts;
     }
 
-    private sealed record IpFailureState(int Count, DateTimeOffset? BlockedUntil);
+    private sealed record IpFailureState(int Count, DateTimeOffset? BlockedUntil, DateTimeOffset LastFailureUtc);
 
     private sealed class ConnectedDeviceSession
     {

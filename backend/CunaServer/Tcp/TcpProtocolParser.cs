@@ -1,8 +1,149 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using CunaServer.Data;
 
 namespace CunaServer.Tcp;
+
+/// <summary>
+/// Lector TCP con buffer reutilizable (ArrayPool) que evita syscalls byte a byte
+/// manteniendo el límite estricto de 4 KB por línea de protocolo.
+/// </summary>
+public sealed class TcpLineReader : IDisposable
+{
+    private readonly Stream _stream;
+    private readonly byte[] _readBuffer;
+    private readonly byte[] _lineBuffer;
+    private int _readStart;
+    private int _readEnd;
+    private bool _disposed;
+
+    public TcpLineReader(Stream stream, int bufferSize = 8192)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        _stream = stream;
+        _readBuffer = ArrayPool<byte>.Shared.Rent(Math.Max(bufferSize, TcpProtocolParser.MaxLineBytes));
+        _lineBuffer = ArrayPool<byte>.Shared.Rent(TcpProtocolParser.MaxLineBytes);
+    }
+
+    private enum ChunkConsumeStatus
+    {
+        NeedMoreBytes,
+        CompletedLine,
+        ExceededWithNewlineConsumed,
+        ExceededNeedDiscard
+    }
+
+    public async Task<(string? Line, bool ExceededLimit, bool EndOfStream)> ReadLineAsync(CancellationToken ct)
+    {
+        var lineCount = 0;
+
+        while (true)
+        {
+            if (_readStart >= _readEnd)
+            {
+                _readStart = 0;
+                _readEnd = 0;
+                _readEnd = await _stream.ReadAsync(_readBuffer.AsMemory(0, _readBuffer.Length), ct);
+                if (_readEnd == 0)
+                {
+                    return lineCount == 0
+                        ? (null, false, true)
+                        : (DecodeTrimmedLine(_lineBuffer, lineCount), false, false);
+                }
+            }
+
+            switch (TryConsumeBufferedChunk(ref lineCount, out var completedLine))
+            {
+                case ChunkConsumeStatus.CompletedLine:
+                    return (completedLine, false, false);
+                case ChunkConsumeStatus.ExceededWithNewlineConsumed:
+                    return (null, true, false);
+                case ChunkConsumeStatus.ExceededNeedDiscard:
+                    await DiscardUntilNewlineAsync(ct);
+                    return (null, true, false);
+            }
+        }
+    }
+
+    private ChunkConsumeStatus TryConsumeBufferedChunk(ref int lineCount, out string? completedLine)
+    {
+        completedLine = null;
+
+        var available = _readBuffer.AsSpan(_readStart, _readEnd - _readStart);
+        var newlineIndex = available.IndexOf((byte)'\n');
+        if (newlineIndex >= 0)
+        {
+            _readStart += newlineIndex + 1;
+            if (lineCount + newlineIndex > TcpProtocolParser.MaxLineBytes)
+            {
+                return ChunkConsumeStatus.ExceededWithNewlineConsumed;
+            }
+
+            available[..newlineIndex].CopyTo(_lineBuffer.AsSpan(lineCount));
+            lineCount += newlineIndex;
+            completedLine = DecodeTrimmedLine(_lineBuffer, lineCount);
+            return ChunkConsumeStatus.CompletedLine;
+        }
+
+        if (lineCount + available.Length > TcpProtocolParser.MaxLineBytes)
+        {
+            _readStart = _readEnd;
+            return ChunkConsumeStatus.ExceededNeedDiscard;
+        }
+
+        available.CopyTo(_lineBuffer.AsSpan(lineCount));
+        lineCount += available.Length;
+        _readStart = _readEnd;
+        return ChunkConsumeStatus.NeedMoreBytes;
+    }
+
+    private async Task DiscardUntilNewlineAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            _readStart = 0;
+            _readEnd = 0;
+            _readEnd = await _stream.ReadAsync(_readBuffer.AsMemory(0, _readBuffer.Length), ct);
+            if (_readEnd == 0)
+            {
+                return;
+            }
+
+            var discardNl = FindNewlineIndex(_readBuffer, 0, _readEnd);
+            if (discardNl >= 0)
+            {
+                _readStart = discardNl + 1;
+                return;
+            }
+        }
+    }
+
+    private static int FindNewlineIndex(byte[] buffer, int start, int end)
+        => buffer.AsSpan(start, end - start).IndexOf((byte)'\n');
+
+    private static string DecodeTrimmedLine(byte[] buffer, int length)
+    {
+        while (length > 0 && buffer[length - 1] == (byte)'\r')
+        {
+            length--;
+        }
+
+        return Encoding.UTF8.GetString(buffer, 0, length);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        ArrayPool<byte>.Shared.Return(_readBuffer);
+        ArrayPool<byte>.Shared.Return(_lineBuffer);
+    }
+}
 
 public static class TcpProtocolParser
 {
