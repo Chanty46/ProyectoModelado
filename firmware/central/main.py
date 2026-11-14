@@ -313,7 +313,8 @@ class CentralNode(DeviceNode):
                 return True, None
             notes = []
             for n in params.get("notes") or []:
-                freq, ms = int(n.get("freq_hz", 0)), int(n.get("ms", 0))
+                freq = int(n.get("freq_hz", n.get("freq", 0)))
+                ms = int(n.get("ms", 0))
                 if 0 <= freq <= 5000 and 0 < ms <= 5000:
                     notes.append((freq, ms))
             if not notes:

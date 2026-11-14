@@ -105,6 +105,17 @@ class SimulatorProtocolAndRulesTests(unittest.TestCase):
         self.assertEqual(player.chunks_received, 1)
         self.assertEqual(player.samples_played, 400)
 
+    def test_mattress_engine_handles_10000_ticks_fast(self) -> None:
+        import time
+
+        engine = MattressRuleEngine(mass_scale=0.20)
+        t0 = time.perf_counter()
+        for i in range(10_000):
+            mass = 0.620 if (i % 2 == 0) else 0.600
+            engine.process_sample(i * 0.2, mass)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertLess(elapsed_ms, 500.0)
+
 
 if __name__ == "__main__":
     unittest.main()

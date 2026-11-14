@@ -229,6 +229,18 @@ class FirmwareMicroPythonM9Tests(unittest.TestCase):
         self.assertEqual(received_seqs, [1, 2])
         self.assertEqual(central.buffer.pending_count, 0)
 
+    def test_07_central_song_accepts_freq_and_freq_hz_keys(self):
+        """Verifica compatibilidad de notas entre Postgres ('freq') y repositorio en memoria ('freq_hz')."""
+        central = CentralNode()
+        ok, err = central.handle_command(
+            "song_play",
+            {"action": "play", "song": "brahms", "duration_s": 30, "notes": [{"freq": 330, "ms": 300}, {"freq_hz": 392, "ms": 600}]},
+            now_ms=1000,
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertEqual(central.song_notes, [(330, 300), (392, 600)])
+
 
 if __name__ == "__main__":
     unittest.main()

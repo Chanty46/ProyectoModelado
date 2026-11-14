@@ -99,6 +99,7 @@ class MattressRuleEngine:
     _recent_samples: Deque[Tuple[float, float]] = field(default_factory=lambda: deque(maxlen=10))
     _minute_accumulated_delta: float = 0.0
     _sliding_deltas: Deque[Tuple[float, float]] = field(default_factory=deque)
+    _sliding_delta_sum: float = 0.0
     _high_movement_since: Optional[float] = None
     _movement_alert_emitted: bool = False
     _removal_emitted_for_drop: bool = False
@@ -146,12 +147,14 @@ class MattressRuleEngine:
                 self._minute_accumulated_delta += delta_valid
 
         self._sliding_deltas.append((timestamp_s, delta_valid))
+        self._sliding_delta_sum += delta_valid
         while self._sliding_deltas and (timestamp_s - self._sliding_deltas[0][0]) > 60.0:
-            self._sliding_deltas.popleft()
+            _, expired_delta = self._sliding_deltas.popleft()
+            self._sliding_delta_sum = max(0.0, self._sliding_delta_sum - expired_delta)
 
         # 3. Evaluación de movimiento anómalo durante 30 s consecutivos (RF29)
         if self.movement_alert_enabled and mass_kg > self.presence_threshold_kg:
-            sliding_rate_kg_min = sum(d for _, d in self._sliding_deltas)
+            sliding_rate_kg_min = self._sliding_delta_sum
             if sliding_rate_kg_min > self.movement_threshold_kg_per_min:
                 if self._high_movement_since is None:
                     self._high_movement_since = timestamp_s
