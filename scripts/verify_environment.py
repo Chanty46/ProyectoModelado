@@ -127,8 +127,15 @@ def main() -> int:
         print(f"  [{RED}FALLO{RESET}] Fallaron pruebas de firmware")
         failures.append("Pruebas firmware")
 
-    # 6. Typecheck y Build de Frontend React
-    print_step("6. Verificando frontend React (TypeScript + Vite)")
+    # 6. Typecheck, Pruebas Unitarias y Build de Frontend React
+    print_step("6. Verificando frontend React (TypeScript + Tests + Vite)")
+    code, out = run_command(["npm", "test"], cwd=repo_root / "frontend")
+    if code == 0:
+        print(f"  [{GREEN}OK{RESET}] Pruebas unitarias de helpers frontend pasaron.")
+    else:
+        print(f"  [{RED}FALLO{RESET}] Fallaron pruebas unitarias frontend:\n{out}")
+        failures.append("Tests frontend")
+
     code, out = run_command(["npm", "run", "lint"], cwd=repo_root / "frontend")
     if code == 0:
         print(f"  [{GREEN}OK{RESET}] Verificación estricta de tipos TypeScript completada.")
@@ -143,10 +150,19 @@ def main() -> int:
         print(f"  [{RED}FALLO{RESET}] Error al construir paquete de frontend:\n{out}")
         failures.append("Build frontend")
 
+    # 7. Verificación de Transporte Telegram (Mock HTTP Bot API)
+    print_step("7. Verificando cliente Telegram Bot API (simulación HTTP)")
+    code, out = run_command(["python3", "scripts/test_telegram.py", "--mock"])
+    if code == 0:
+        print(f"  [{GREEN}OK{RESET}] Prueba mock HTTP Bot API de Telegram completada.")
+    else:
+        print(f"  [{RED}FALLO{RESET}] Falló prueba mock de Telegram:\n{out}")
+        failures.append("Mock Telegram API")
+
     # Resumen final
     print("\n" + "=" * 65)
     if not failures:
-        print(f"{BOLD}{GREEN}✓ TODOS LOS SISTEMAS LISTOS PARA DEMOSTRACIÓN (Hito M10){RESET}")
+        print(f"{BOLD}{GREEN}✓ TODOS LOS SISTEMAS LISTOS PARA DEMOSTRACIÓN (Hito M11){RESET}")
         print("Puedes arrancar la demostración siguiendo docs/DEMO_GUIDE.md")
         print("=" * 65)
         return 0

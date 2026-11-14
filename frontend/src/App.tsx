@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, type FormEvent } from "react";
 import { Routes, Route } from "react-router-dom";
 import {
   ShieldCheck,
+  Shield,
   LogOut,
   Users,
   Link2,
@@ -10,6 +11,9 @@ import {
   AlertTriangle,
   Copy,
   Check,
+  X,
+  Activity,
+  MessageSquare,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import {
@@ -17,11 +21,16 @@ import {
   ApiError,
   type AccountContextResponse,
   type CreateInvitationResponse,
+  type HealthStatusResponse,
+  type SecurityAuditEntry,
 } from "./lib/api";
+import { canManagePrincipalActions } from "./lib/formatters";
 import { ProfileSelectorBar } from "./components/ProfileSelectorBar";
 import { CribAndDeviceManager } from "./components/CribAndDeviceManager";
 import { TelegramAndRemindersPanel } from "./components/TelegramAndRemindersPanel";
 import { AcceptInvitationPage } from "./pages/AcceptInvitationPage";
+
+type DashboardTab = "monitoreo" | "comunicacion" | "familia";
 
 export default function App() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
@@ -29,6 +38,11 @@ export default function App() {
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<DashboardTab>("monitoreo");
+  const [health, setHealth] = useState<HealthStatusResponse | null>(null);
+  const [healthOffline, setHealthOffline] = useState<boolean>(false);
+  const [auditEntries, setAuditEntries] = useState<SecurityAuditEntry[]>([]);
+  const [loadingAudit, setLoadingAudit] = useState<boolean>(false);
 
   // Formularios
   const [familyNameInput, setFamilyNameInput] = useState("Mi Familia");
@@ -129,14 +143,15 @@ export default function App() {
   }, [clearLocalSessionState, refreshAccountContext]);
 
   // Suscripción Realtime a public.usuarios y public.perfiles_cuidador (RF22 < 5s / RF23 < 2s)
+  const familyId = account?.familia?.id ?? null;
   useEffect(() => {
     const sbClient = supabase;
-    if (!sbClient || !accessToken || !account?.familia) {
+    if (!sbClient || !accessToken || !familyId) {
       return;
     }
 
     const channel = sbClient
-      .channel(`family-sync-${account.familia.id}`)
+      .channel(`family-sync-${familyId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "usuarios" },
@@ -156,7 +171,64 @@ export default function App() {
     return () => {
       void sbClient.removeChannel(channel);
     };
-  }, [accessToken, account?.familia, refreshAccountContext]);
+  }, [accessToken, familyId, refreshAccountContext]);
+
+  useEffect(() => {
+    let active = true;
+    let controller: AbortController | null = null;
+
+    async function pollHealth() {
+      controller?.abort();
+      controller = new AbortController();
+      try {
+        const res = await accountApi.getHealthStatus(controller.signal);
+        if (active) {
+          setHealth(res);
+          setHealthOffline(false);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
+        if (active) {
+          setHealthOffline(true);
+        }
+      }
+    }
+
+    void pollHealth();
+    const timer = window.setInterval(() => void pollHealth(), 15000);
+    return () => {
+      active = false;
+      controller?.abort();
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const isPrincipal = canManagePrincipalActions(account?.rol ?? null);
+
+  const loadSecurityAudit = useCallback(async () => {
+    if (!accessToken || !isPrincipal) {
+      return;
+    }
+    setLoadingAudit(true);
+    try {
+      const logs = await accountApi.listSecurityAudit(accessToken);
+      setAuditEntries(logs.slice(0, 15));
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setErrorBanner(err.message);
+      }
+    } finally {
+      setLoadingAudit(false);
+    }
+  }, [accessToken, isPrincipal]);
+
+  useEffect(() => {
+    if (activeTab === "familia" && isPrincipal && accessToken) {
+      void loadSecurityAudit();
+    }
+  }, [activeTab, isPrincipal, accessToken, loadSecurityAudit]);
 
   async function handleGoogleLogin() {
     if (!supabase) {
@@ -304,16 +376,33 @@ export default function App() {
             </div>
           </div>
 
-          {accessToken && (
-            <button
-              type="button"
-              onClick={handleSignOut}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
-            >
-              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-              Cerrar sesión
-            </button>
-          )}
+          <div className="flex items-center gap-2.5">
+            {health && !healthOffline ? (
+              <span
+                title={`TCP :${health.tcpPort} · Última verificación: ${new Date(health.timestamp).toLocaleTimeString()}`}
+                className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700"
+              >
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                TCP :{health.tcpPort} · {health.connectedDevices} nodo(s)
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                <span className="h-2 w-2 rounded-full bg-slate-400" />
+                {healthOffline ? "API local sin conexión" : "Conectando API..."}
+              </span>
+            )}
+
+            {accessToken && (
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+              >
+                <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                Cerrar sesión
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -328,6 +417,14 @@ export default function App() {
               <p className="font-medium">Aviso de seguridad / autorización</p>
               <p className="text-xs mt-0.5">{errorBanner}</p>
             </div>
+            <button
+              type="button"
+              onClick={() => setErrorBanner(null)}
+              aria-label="Cerrar aviso"
+              className="rounded-lg p-1 text-red-600 hover:bg-red-100 transition-colors"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
           </div>
         )}
 
@@ -410,175 +507,304 @@ export default function App() {
               onSelectProfile={handleSelectProfile}
             />
 
-            {/* M4 + M5: Gestión de Cunas, Emparejamiento Pico W (RF24–RF27), Bebé (RF28), Cuna en Vivo (M5) e Intercomunicador (RF11) */}
-            <CribAndDeviceManager
-              accessToken={accessToken}
-              activeProfileId={activeProfileId}
-              userRole={account.rol}
-              onError={setErrorBanner}
-            />
+            {/* Navegación principal por pestañas */}
+            <nav
+              aria-label="Secciones del panel familiar"
+              role="tablist"
+              className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "monitoreo"}
+                onClick={() => setActiveTab("monitoreo")}
+                className={`inline-flex flex-1 min-w-[180px] items-center justify-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors ${
+                  activeTab === "monitoreo"
+                    ? "bg-teal-600 text-white shadow-sm"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                }`}
+              >
+                <Activity className="h-4 w-4" aria-hidden="true" />
+                Monitoreo y Estímulos
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "comunicacion"}
+                onClick={() => setActiveTab("comunicacion")}
+                className={`inline-flex flex-1 min-w-[180px] items-center justify-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors ${
+                  activeTab === "comunicacion"
+                    ? "bg-teal-600 text-white shadow-sm"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                }`}
+              >
+                <MessageSquare className="h-4 w-4" aria-hidden="true" />
+                Telegram y Recordatorios
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "familia"}
+                onClick={() => setActiveTab("familia")}
+                className={`inline-flex flex-1 min-w-[180px] items-center justify-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors ${
+                  activeTab === "familia"
+                    ? "bg-teal-600 text-white shadow-sm"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                }`}
+              >
+                <Users className="h-4 w-4" aria-hidden="true" />
+                Administración Familiar
+              </button>
+            </nav>
 
-            {/* M6: Vinculación de Telegram por usuario (RF38 / RF39 / RF19) y Recordatorios de Tomas (RF18) */}
-            <TelegramAndRemindersPanel
-              accessToken={accessToken}
-              activeProfileId={activeProfileId}
-              onError={setErrorBanner}
-            />
+            {activeTab === "monitoreo" && (
+              /* M4 + M5: Gestión de Cunas, Emparejamiento Pico W (RF24–RF27), Bebé (RF28), Cuna en Vivo (M5) e Intercomunicador (RF11) */
+              <CribAndDeviceManager
+                accessToken={accessToken}
+                activeProfileId={activeProfileId}
+                userRole={account.rol}
+                onError={setErrorBanner}
+              />
+            )}
 
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-              {/* RF23: Gestión de Perfiles de Cuidador */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Users className="h-5 w-5 text-teal-600" aria-hidden="true" />
-                    <h2 className="text-base font-semibold text-slate-900">
-                      Perfiles de Cuidador (RF23)
-                    </h2>
+            {activeTab === "comunicacion" && (
+              /* M6: Vinculación de Telegram por usuario (RF38 / RF39 / RF19) y Recordatorios de Tomas (RF18) */
+              <TelegramAndRemindersPanel
+                accessToken={accessToken}
+                activeProfileId={activeProfileId}
+                onError={setErrorBanner}
+              />
+            )}
+
+            {activeTab === "familia" && (
+              <div className="space-y-6">
+                {!isPrincipal && (
+                  <div className="rounded-xl border border-slate-200 bg-slate-100/80 px-4 py-3 text-xs text-slate-700">
+                    Tu rol actual es <strong>Usuario Secundario</strong>. Puedes consultar los perfiles y miembros de la familia; únicamente el Usuario Principal puede crear o dar de baja perfiles, emitir invitaciones o revocar accesos (RF03).
                   </div>
-                  <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
-                    {account.perfiles.length} / 6 activos
-                  </span>
+                )}
+
+                <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                  {/* RF23: Gestión de Perfiles de Cuidador */}
+                  <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Users className="h-5 w-5 text-teal-600" aria-hidden="true" />
+                        <h2 className="text-base font-semibold text-slate-900">
+                          Perfiles de Cuidador (RF23)
+                        </h2>
+                      </div>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
+                        {account.perfiles.length} / 6 activos
+                      </span>
+                    </div>
+
+                    <ul className="divide-y divide-slate-100">
+                      {account.perfiles.map((profile) => (
+                        <li key={profile.id} className="flex items-center justify-between py-2.5">
+                          <div className="flex items-center gap-2.5">
+                            <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-teal-50 text-xs font-bold text-teal-700">
+                              {profile.avatar}
+                            </span>
+                            <span className="text-sm font-medium text-slate-800">
+                              {profile.nombre}
+                            </span>
+                          </div>
+                          {isPrincipal && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteProfile(profile.id)}
+                              title="Dar de baja lógica al perfil (RF23)"
+                              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                              Baja
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+
+                    {isPrincipal && (
+                      <form onSubmit={handleCreateProfile} className="pt-2 space-y-3 border-t border-slate-100">
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            maxLength={30}
+                            placeholder="Nuevo perfil (1–30 caracteres)"
+                            value={newProfileName}
+                            onChange={(e) => setNewProfileName(e.target.value)}
+                            className="flex-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                          />
+                          <select
+                            value={newProfileAvatar}
+                            onChange={(e) => setNewProfileAvatar(e.target.value)}
+                            aria-label="Avatar del perfil"
+                            className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
+                          >
+                            <option value="F1">F1</option>
+                            <option value="M1">M1</option>
+                            <option value="C1">C1</option>
+                            <option value="A1">A1</option>
+                          </select>
+                          <button
+                            type="submit"
+                            disabled={account.perfiles.length >= 6}
+                            className="inline-flex items-center gap-1 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+                          >
+                            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                            Agregar
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </section>
+
+                  {/* RF02 y RF22: Invitaciones y Miembros de la Familia */}
+                  <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Link2 className="h-5 w-5 text-teal-600" aria-hidden="true" />
+                        <h2 className="text-base font-semibold text-slate-900">
+                          Miembros e Invitaciones (RF02 / RF22)
+                        </h2>
+                      </div>
+                    </div>
+
+                    {isPrincipal && (
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={handleCreateInvitation}
+                          className="w-full rounded-xl border border-teal-600 bg-teal-50 px-4 py-2 text-xs font-medium text-teal-800 hover:bg-teal-100"
+                        >
+                          Generar enlace de invitación de 1 uso (24 h)
+                        </button>
+
+                        {invitationResult && (
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+                            <p className="text-[11px] font-medium text-slate-700">
+                              Comparte este enlace manualmente (se muestra una sola vez, vence en 24 h):
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                readOnly
+                                value={invitationResult.inviteUrl}
+                                className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs font-mono text-slate-800"
+                              />
+                              <button
+                                type="button"
+                                onClick={handleCopyInvite}
+                                className="inline-flex items-center gap-1 rounded bg-slate-800 px-2.5 py-1 text-xs text-white hover:bg-slate-700"
+                              >
+                                {copiedInvite ? (
+                                  <>
+                                    <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                                    Copiado
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                                    Copiar
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="pt-2 border-t border-slate-100">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
+                        Usuarios vinculados a la familia
+                      </h3>
+                      <ul className="divide-y divide-slate-100">
+                        {account.miembros.map((member) => (
+                          <li key={member.id} className="flex items-center justify-between py-2.5">
+                            <div>
+                              <p className="text-xs font-medium text-slate-800">{member.email}</p>
+                              <p className="text-[11px] text-slate-500">
+                                {member.rol === "principal" ? "Usuario Principal" : "Usuario Secundario"}
+                              </p>
+                            </div>
+                            {isPrincipal && member.rol === "secundario" && (
+                              <button
+                                type="button"
+                                onClick={() => handleRevokeMember(member.id, member.email)}
+                                className="rounded-md px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+                              >
+                                Revocar acceso (RF22)
+                              </button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </section>
                 </div>
 
-                <ul className="divide-y divide-slate-100">
-                  {account.perfiles.map((profile) => (
-                    <li key={profile.id} className="flex items-center justify-between py-2.5">
-                      <div className="flex items-center gap-2.5">
-                        <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-teal-50 text-xs font-bold text-teal-700">
-                          {profile.avatar}
-                        </span>
-                        <span className="text-sm font-medium text-slate-800">
-                          {profile.nombre}
-                        </span>
+                {/* RNF03: Auditoría de Seguridad (Solo Usuario Principal) */}
+                {isPrincipal && (
+                  <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Shield className="h-5 w-5 text-teal-600" aria-hidden="true" />
+                        <h2 className="text-base font-semibold text-slate-900">
+                          Auditoría de Seguridad Familiar (RNF03)
+                        </h2>
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleDeleteProfile(profile.id)}
-                        title="Dar de baja lógica al perfil (RF23)"
-                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                        disabled={loadingAudit}
+                        onClick={() => void loadSecurityAudit()}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                       >
-                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                        Baja
+                        {loadingAudit ? "Actualizando..." : "Actualizar bitácora"}
                       </button>
-                    </li>
-                  ))}
-                </ul>
-
-                <form onSubmit={handleCreateProfile} className="pt-2 space-y-3 border-t border-slate-100">
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      maxLength={30}
-                      placeholder="Nuevo perfil (1–30 caracteres)"
-                      value={newProfileName}
-                      onChange={(e) => setNewProfileName(e.target.value)}
-                      className="flex-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
-                    />
-                    <select
-                      value={newProfileAvatar}
-                      onChange={(e) => setNewProfileAvatar(e.target.value)}
-                      aria-label="Avatar del perfil"
-                      className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
-                    >
-                      <option value="F1">F1</option>
-                      <option value="M1">M1</option>
-                      <option value="C1">C1</option>
-                      <option value="A1">A1</option>
-                    </select>
-                    <button
-                      type="submit"
-                      disabled={account.perfiles.length >= 6}
-                      className="inline-flex items-center gap-1 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
-                    >
-                      <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                      Agregar
-                    </button>
-                  </div>
-                </form>
-              </section>
-
-              {/* RF02 y RF22: Invitaciones y Miembros de la Familia */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Link2 className="h-5 w-5 text-teal-600" aria-hidden="true" />
-                    <h2 className="text-base font-semibold text-slate-900">
-                      Miembros e Invitaciones (RF02 / RF22)
-                    </h2>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <button
-                    type="button"
-                    onClick={handleCreateInvitation}
-                    className="w-full rounded-xl border border-teal-600 bg-teal-50 px-4 py-2 text-xs font-medium text-teal-800 hover:bg-teal-100"
-                  >
-                    Generar enlace de invitación de 1 uso (24 h)
-                  </button>
-
-                  {invitationResult && (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
-                      <p className="text-[11px] font-medium text-slate-700">
-                        Comparte este enlace manualmente (se muestra una sola vez, vence en 24 h):
-                      </p>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          readOnly
-                          value={invitationResult.inviteUrl}
-                          className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs font-mono text-slate-800"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleCopyInvite}
-                          className="inline-flex items-center gap-1 rounded bg-slate-800 px-2.5 py-1 text-xs text-white hover:bg-slate-700"
-                        >
-                          {copiedInvite ? (
-                            <>
-                              <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                              Copiado
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-                              Copiar
-                            </>
-                          )}
-                        </button>
-                      </div>
                     </div>
-                  )}
-                </div>
 
-                <div className="pt-2 border-t border-slate-100">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
-                    Usuarios vinculados a la familia
-                  </h3>
-                  <ul className="divide-y divide-slate-100">
-                    {account.miembros.map((member) => (
-                      <li key={member.id} className="flex items-center justify-between py-2.5">
-                        <div>
-                          <p className="text-xs font-medium text-slate-800">{member.email}</p>
-                          <p className="text-[11px] text-slate-500">
-                            {member.rol === "principal" ? "Usuario Principal" : "Usuario Secundario"}
-                          </p>
-                        </div>
-                        {member.rol === "secundario" && (
-                          <button
-                            type="button"
-                            onClick={() => handleRevokeMember(member.id, member.email)}
-                            className="rounded-md px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
-                          >
-                            Revocar acceso (RF22)
-                          </button>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </section>
-            </div>
+                    {auditEntries.length === 0 ? (
+                      <p className="text-xs text-slate-500">
+                        Sin eventos recientes registrados en la bitácora de seguridad.
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="border-b border-slate-200 text-[11px] uppercase text-slate-500">
+                            <tr>
+                              <th className="py-1.5 pr-3">Fecha</th>
+                              <th className="py-1.5 pr-3">Evento</th>
+                              <th className="py-1.5 pr-3">IP / Dispositivo</th>
+                              <th className="py-1.5">Detalle</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {auditEntries.map((entry, idx) => (
+                              <tr key={`${entry.ts}-${entry.evento}-${idx}`}>
+                                <td className="py-1.5 pr-3 whitespace-nowrap text-slate-500">
+                                  {new Date(entry.ts).toLocaleString()}
+                                </td>
+                                <td className="py-1.5 pr-3 font-mono font-medium text-slate-800">
+                                  {entry.evento}
+                                </td>
+                                <td className="py-1.5 pr-3 font-mono text-slate-600">
+                                  {entry.dispositivoId ?? entry.ipOrigen ?? "—"}
+                                </td>
+                                <td className="py-1.5 text-slate-600">
+                                  {entry.detalle ?? "—"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </section>
+                )}
+              </div>
+            )}
           </div>
         )}
       </main>

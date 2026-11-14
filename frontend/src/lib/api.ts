@@ -120,6 +120,43 @@ export interface GenerateTelegramCodeResponse {
   expiraEn: string;
   botUsername: string;
   comandoEjemplo: string;
+  deepLinkUrl?: string | null;
+}
+
+export interface TelegramBotStatusResponse {
+  tokenConfigured: boolean;
+  mode: string;
+  botReachable: boolean;
+  botUsername: string;
+  resolvedUsername: string | null;
+  userLinked: boolean;
+  userChatId: number | null;
+  note: string;
+}
+
+export interface TelegramTestMessageResponse {
+  sent: boolean;
+  chatId: number | null;
+  mode: string;
+  message: string;
+}
+
+export interface SecurityAuditEntry {
+  familyId: string | null;
+  usuarioId: string | null;
+  dispositivoId: string | null;
+  evento: string;
+  ipOrigen: string | null;
+  detalle: string | null;
+  ts: string;
+}
+
+export interface HealthStatusResponse {
+  status: string;
+  service: string;
+  tcpPort: number;
+  connectedDevices: number;
+  timestamp: string;
 }
 
 export interface FeedingReminderRecord {
@@ -444,9 +481,10 @@ export const accountApi = {
 
   getLiveCribStatus(
     accessToken: string,
-    cunaId: string
+    cunaId: string,
+    signal?: AbortSignal
   ): Promise<LiveCribStatusResponse> {
-    return requestJson<LiveCribStatusResponse>(`/api/cribs/${cunaId}/live`, accessToken);
+    return requestJson<LiveCribStatusResponse>(`/api/cribs/${cunaId}/live`, accessToken, { signal });
   },
 
   setCribMode(
@@ -498,6 +536,19 @@ export const accountApi = {
 
   getTelegramLink(accessToken: string): Promise<TelegramLinkStatusResponse> {
     return requestJson<TelegramLinkStatusResponse>("/api/telegram/link", accessToken);
+  },
+
+  getTelegramStatus(
+    accessToken: string,
+    signal?: AbortSignal
+  ): Promise<TelegramBotStatusResponse> {
+    return requestJson<TelegramBotStatusResponse>("/api/telegram/status", accessToken, { signal });
+  },
+
+  sendTelegramTest(accessToken: string): Promise<TelegramTestMessageResponse> {
+    return requestJson<TelegramTestMessageResponse>("/api/telegram/test", accessToken, {
+      method: "POST",
+    });
   },
 
   generateTelegramLinkCode(accessToken: string): Promise<GenerateTelegramCodeResponse> {
@@ -672,5 +723,17 @@ export const accountApi = {
       `/api/cribs/${cunaId}/toys`,
       accessToken
     );
+  },
+
+  listSecurityAudit(accessToken: string): Promise<SecurityAuditEntry[]> {
+    return requestJson<SecurityAuditEntry[]>("/api/family/security-audit", accessToken);
+  },
+
+  async getHealthStatus(signal?: AbortSignal): Promise<HealthStatusResponse> {
+    const response = await fetch(`${apiBaseUrl}/health`, { signal });
+    if (!response.ok) {
+      throw new ApiError(response.status, `Error HTTP ${response.status}`);
+    }
+    return (await response.json()) as HealthStatusResponse;
   },
 };

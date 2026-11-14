@@ -378,19 +378,36 @@ export function FeedingToysAndHistoryPanel({
 
         {/* RF12, RF13, RF33, RF36: Canciones PWM, Móvil de 9 LEDs y Juguete */}
         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <Music className="h-4 w-4 text-teal-600" aria-hidden="true" />
               <h4 className="text-xs font-semibold text-slate-900">
                 Melodías PWM (RF12) y Móvil 9 LEDs (RF13 / RF33)
               </h4>
             </div>
-            {toysStatus?.alertaBateriaBajaJuguete && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-800">
-                <BatteryWarning className="h-3 w-3" aria-hidden="true" />
-                Batería baja juguete ({toysStatus.bateriaJuguetePct}%)
-              </span>
-            )}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {toysStatus?.bateriaJuguetePct !== null && toysStatus?.bateriaJuguetePct !== undefined && (
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                    toysStatus.alertaBateriaBajaJuguete
+                      ? "bg-red-100 text-red-800"
+                      : "bg-slate-100 text-slate-700"
+                  }`}
+                >
+                  {toysStatus.alertaBateriaBajaJuguete && (
+                    <BatteryWarning className="h-3 w-3" aria-hidden="true" />
+                  )}
+                  Juguete: {toysStatus.bateriaJuguetePct}%
+                </span>
+              )}
+              {toysStatus?.bateriaBiberonPct !== null && toysStatus?.bateriaBiberonPct !== undefined && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                  Biberón: {toysStatus.bateriaBiberonPct}%
+                  {toysStatus.ultimaMasaBiberonG !== null ? ` · ${toysStatus.ultimaMasaBiberonG.toFixed(0)}g` : ""}
+                  {toysStatus.ultimaTempBiberonC !== null ? ` · ${toysStatus.ultimaTempBiberonC.toFixed(1)}°C` : ""}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -492,6 +509,14 @@ export function FeedingToysAndHistoryPanel({
             </button>
             <button
               type="button"
+              onClick={() => handleRecordSampleSleep("noche")}
+              disabled={!bebeId}
+              className="rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+            >
+              + Noche
+            </button>
+            <button
+              type="button"
               onClick={() => handleExport("csv")}
               disabled={!bebeId || isExporting}
               className="inline-flex items-center gap-1 rounded-lg border border-teal-600 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-800 hover:bg-teal-100 disabled:opacity-50 transition-colors"
@@ -562,6 +587,33 @@ export function FeedingToysAndHistoryPanel({
               </ul>
             )}
           </div>
+        </div>
+
+        {/* RF36: Uso reciente de Juguete Didáctico y Móvil de LEDs */}
+        <div className="pt-2 border-t border-slate-100">
+          <h5 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+            Actividad de Juguete y Móvil (RF36) ({toysStatus?.historialUso.length ?? 0})
+          </h5>
+          {!toysStatus || toysStatus.historialUso.length === 0 ? (
+            <p className="text-xs text-slate-500">Sin sesiones recientes de juguete didáctico o móvil.</p>
+          ) : (
+            <ul className="max-h-28 overflow-y-auto divide-y divide-slate-100 text-xs">
+              {toysStatus.historialUso.slice(0, 6).map((item) => (
+                <li key={item.id} className="py-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    <strong className="uppercase">{item.tipo}</strong> ·{" "}
+                    {new Date(item.inicio).toLocaleString()}
+                    {item.patron ? ` · Patrón: ${item.patron}` : ""}
+                    {item.velocidad ? ` (${item.velocidad})` : ""}
+                  </span>
+                  <span className="text-slate-600 font-medium">
+                    {item.duracionSegundos} s
+                    {item.aciertos !== null ? ` · Aciertos: ${item.aciertos}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>

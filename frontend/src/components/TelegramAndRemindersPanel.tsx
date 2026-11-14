@@ -1,12 +1,23 @@
 import { useState, useEffect, useCallback, type FormEvent } from "react";
-import { MessageSquare, Clock, Copy, Check, Unlink } from "lucide-react";
+import {
+  MessageSquare,
+  Clock,
+  Copy,
+  Check,
+  Unlink,
+  Send,
+  ExternalLink,
+} from "lucide-react";
 import {
   accountApi,
   ApiError,
   type TelegramLinkStatusResponse,
   type GenerateTelegramCodeResponse,
+  type TelegramBotStatusResponse,
+  type TelegramTestMessageResponse,
   type FeedingReminderRecord,
 } from "../lib/api";
+import { buildTelegramDeepLink } from "../lib/formatters";
 
 interface TelegramAndRemindersPanelProps {
   accessToken: string;
@@ -20,8 +31,11 @@ export function TelegramAndRemindersPanel({
   onError,
 }: TelegramAndRemindersPanelProps) {
   const [linkStatus, setLinkStatus] = useState<TelegramLinkStatusResponse | null>(null);
+  const [botStatus, setBotStatus] = useState<TelegramBotStatusResponse | null>(null);
   const [generatedCode, setGeneratedCode] = useState<GenerateTelegramCodeResponse | null>(null);
   const [copiedCommand, setCopiedCommand] = useState(false);
+  const [testResult, setTestResult] = useState<TelegramTestMessageResponse | null>(null);
+  const [isSendingTest, setIsSendingTest] = useState(false);
 
   const [reminder, setReminder] = useState<FeedingReminderRecord | null>(null);
   const [intervalHours, setIntervalHours] = useState<number>(3);
@@ -32,11 +46,13 @@ export function TelegramAndRemindersPanel({
 
   const loadData = useCallback(async () => {
     try {
-      const [status, rem] = await Promise.all([
+      const [status, botStat, rem] = await Promise.all([
         accountApi.getTelegramLink(accessToken),
+        accountApi.getTelegramStatus(accessToken),
         accountApi.getFeedingReminder(accessToken),
       ]);
       setLinkStatus(status);
+      setBotStatus(botStat);
       setReminder(rem);
       setIntervalHours(rem.intervaloHoras);
       setReminderActive(rem.activo);
@@ -53,6 +69,7 @@ export function TelegramAndRemindersPanel({
 
   async function handleGenerateCode() {
     onError(null);
+    setTestResult(null);
     setIsGeneratingCode(true);
     try {
       const res = await accountApi.generateTelegramLinkCode(accessToken);
@@ -65,6 +82,22 @@ export function TelegramAndRemindersPanel({
       }
     } finally {
       setIsGeneratingCode(false);
+    }
+  }
+
+  async function handleSendTestMessage() {
+    onError(null);
+    setTestResult(null);
+    setIsSendingTest(true);
+    try {
+      const res = await accountApi.sendTelegramTest(accessToken);
+      setTestResult(res);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        onError(err.message);
+      }
+    } finally {
+      setIsSendingTest(false);
     }
   }
 
@@ -134,36 +167,91 @@ export function TelegramAndRemindersPanel({
           </span>
         </div>
 
-        <p className="text-xs text-slate-600">
-          Vincula tu cuenta de Telegram personal con{" "}
-          <span className="font-mono font-semibold text-slate-800">
-            @CunasInteligentes_Modelado_Bot
-          </span>{" "}
-          para recibir alertas críticas redundantes (RF19) y consultar{" "}
-          <code className="font-mono">/estado</code> en &lt; 2 s (RF39).
-        </p>
+        <div className="space-y-2">
+          <p className="text-xs text-slate-600">
+            Vincula tu cuenta de Telegram personal con{" "}
+            <span className="font-mono font-semibold text-slate-800">
+              {botStatus?.resolvedUsername ?? botStatus?.botUsername ?? "@CunasInteligentes_Modelado_Bot"}
+            </span>{" "}
+            para recibir alertas críticas redundantes (RF19) y consultar{" "}
+            <code className="font-mono">/estado</code> en &lt; 2 s (RF39).
+          </p>
+
+          {botStatus && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px]">
+              <span
+                className={`inline-flex items-center gap-1.5 font-medium ${
+                  botStatus.tokenConfigured && botStatus.botReachable
+                    ? "text-emerald-700"
+                    : "text-amber-700"
+                }`}
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    botStatus.tokenConfigured && botStatus.botReachable
+                      ? "bg-emerald-500"
+                      : "bg-amber-500"
+                  }`}
+                />
+                {botStatus.tokenConfigured && botStatus.botReachable
+                  ? "Bot Telegram HTTP activo"
+                  : botStatus.tokenConfigured
+                  ? "Token configurado (sin conexión HTTP)"
+                  : "Modo simulación local (sin TELEGRAM_BOT_TOKEN)"}
+              </span>
+              <span className="text-slate-500">
+                Requiere <code className="font-mono">/start</code> previo (Telegram Bot API usa Chat ID, no teléfono)
+              </span>
+            </div>
+          )}
+        </div>
 
         {linkStatus?.vinculado ? (
-          <div className="flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
-            <div>
-              <p className="text-xs font-semibold text-emerald-900">
-                Chat ID #{linkStatus.chatId} activo
-              </p>
-              {linkStatus.vinculadoEn && (
-                <p className="text-[11px] text-emerald-800">
-                  Vinculado el {new Date(linkStatus.vinculadoEn).toLocaleString()}
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
+              <div>
+                <p className="text-xs font-semibold text-emerald-900">
+                  Chat ID #{linkStatus.chatId} activo
                 </p>
-              )}
+                {linkStatus.vinculadoEn && (
+                  <p className="text-[11px] text-emerald-800">
+                    Vinculado el {new Date(linkStatus.vinculadoEn).toLocaleString()}
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isSendingTest}
+                  onClick={handleSendTestMessage}
+                  className="inline-flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
+                >
+                  <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                  {isSendingTest ? "Enviando..." : "Enviar mensaje de prueba"}
+                </button>
+                <button
+                  type="button"
+                  disabled={isUnlinking}
+                  onClick={handleUnlinkTelegram}
+                  className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
+                >
+                  <Unlink className="h-3.5 w-3.5" aria-hidden="true" />
+                  {isUnlinking ? "Desvinculando..." : "Desvincular"}
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              disabled={isUnlinking}
-              onClick={handleUnlinkTelegram}
-              className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
-            >
-              <Unlink className="h-3.5 w-3.5" aria-hidden="true" />
-              {isUnlinking ? "Desvinculando..." : "Desvincular"}
-            </button>
+
+            {testResult && (
+              <p
+                className={`rounded-lg border px-3 py-2 text-xs ${
+                  testResult.sent
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    : "border-amber-200 bg-amber-50 text-amber-800"
+                }`}
+              >
+                {testResult.message} (modo: <span className="font-mono">{testResult.mode}</span>)
+              </p>
+            )}
           </div>
         ) : (
           <button
@@ -179,17 +267,17 @@ export function TelegramAndRemindersPanel({
         )}
 
         {generatedCode && (
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2.5">
             <p className="text-[11px] font-medium text-slate-700">
               Envía este comando a <span className="font-mono">{generatedCode.botUsername}</span>{" "}
               antes de las {new Date(generatedCode.expiraEn).toLocaleTimeString()}:
             </p>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <input
                 type="text"
                 readOnly
                 value={generatedCode.comandoEjemplo}
-                className="flex-1 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-mono text-slate-900"
+                className="flex-1 min-w-[180px] rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-mono text-slate-900"
               />
               <button
                 type="button"
@@ -208,6 +296,18 @@ export function TelegramAndRemindersPanel({
                   </>
                 )}
               </button>
+              <a
+                href={
+                  generatedCode.deepLinkUrl ??
+                  buildTelegramDeepLink(generatedCode.botUsername, generatedCode.codigo)
+                }
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700"
+              >
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                Abrir en Telegram
+              </a>
             </div>
           </div>
         )}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type FormEvent } from "react";
+import { useState, useEffect, useCallback, useRef, type FormEvent } from "react";
 import {
   Activity,
   Thermometer,
@@ -26,6 +26,7 @@ import {
   ApiError,
   type LiveCribStatusResponse,
 } from "../lib/api";
+import { formatRemainingCountdown, resolveRgbLedStatus } from "../lib/formatters";
 
 interface LiveCribPanelProps {
   accessToken: string;
@@ -47,6 +48,8 @@ export function LiveCribPanel({
   const [live, setLive] = useState<LiveCribStatusResponse | null>(null);
   const [lightLevel, setLightLevel] = useState<number>(50);
   const [showThresholdsForm, setShowThresholdsForm] = useState<boolean>(false);
+  const [countdownNowMs, setCountdownNowMs] = useState<number>(() => Date.now());
+  const isDirtyLightRef = useRef<boolean>(false);
 
   // Estado del formulario de umbrales RF08
   const [tempMin, setTempMin] = useState("18.0");
@@ -58,35 +61,67 @@ export function LiveCribPanel({
   const [ruidoPiso, setRuidoPiso] = useState("0.010");
   const [escalaMasa, setEscalaMasa] = useState("0.20");
 
-  const fetchLiveStatus = useCallback(async () => {
-    try {
-      const data = await accountApi.getLiveCribStatus(accessToken, cunaId);
-      setLive(data);
-      setLightLevel(data.cuna.luzEncendida ? data.cuna.luzNivel : 50);
-      setTempMin(data.umbrales.tempMin.toString());
-      setTempMax(data.umbrales.tempMax.toString());
-      setHumMin(data.umbrales.humMin.toString());
-      setHumMax(data.umbrales.humMax.toString());
-      setMovUmbral(data.umbrales.movimientoUmbral.toString());
-      setMovAlertaActiva(data.umbrales.movimientoAlertaActiva);
-      setRuidoPiso(data.umbrales.ruidoMasaPiso.toString());
-      setEscalaMasa(data.umbrales.escalaMasa.toString());
-    } catch (err) {
-      if (err instanceof ApiError) {
-        onError(err.message);
+  const syncThresholdInputsFromData = useCallback((data: LiveCribStatusResponse) => {
+    setTempMin(data.umbrales.tempMin.toString());
+    setTempMax(data.umbrales.tempMax.toString());
+    setHumMin(data.umbrales.humMin.toString());
+    setHumMax(data.umbrales.humMax.toString());
+    setMovUmbral(data.umbrales.movimientoUmbral.toString());
+    setMovAlertaActiva(data.umbrales.movimientoAlertaActiva);
+    setRuidoPiso(data.umbrales.ruidoMasaPiso.toString());
+    setEscalaMasa(data.umbrales.escalaMasa.toString());
+  }, []);
+
+  const fetchLiveStatus = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const data = await accountApi.getLiveCribStatus(accessToken, cunaId, signal);
+        setLive(data);
+        if (!isDirtyLightRef.current) {
+          setLightLevel(data.cuna.luzEncendida ? data.cuna.luzNivel : 50);
+        }
+        if (!showThresholdsForm) {
+          syncThresholdInputsFromData(data);
+        }
+      } catch (err) {
+        if ((err as Error)?.name === "AbortError") {
+          return;
+        }
+        if (err instanceof ApiError) {
+          onError(err.message);
+        }
       }
-    }
-  }, [accessToken, cunaId, onError]);
+    },
+    [accessToken, cunaId, onError, showThresholdsForm, syncThresholdInputsFromData]
+  );
 
   useEffect(() => {
-    void fetchLiveStatus();
-  }, [fetchLiveStatus]);
+    isDirtyLightRef.current = false;
+    setShowThresholdsForm(false);
+    const controller = new AbortController();
+    void fetchLiveStatus(controller.signal);
+    return () => controller.abort();
+  }, [cunaId, fetchLiveStatus]);
 
-  // IU-01: Suscripción Supabase Realtime (< 1 s) para cunas, telemetria, eventos_alertas y umbrales
+  // Cuenta regresiva cada segundo mientras esté activo el Modo Atención (RF05)
+  useEffect(() => {
+    if (live?.cuna.modoOperacion !== "atencion") {
+      return;
+    }
+    const timer = window.setInterval(() => setCountdownNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [live?.cuna.modoOperacion]);
+
+  // IU-01: Suscripción Supabase Realtime (< 1 s) + fallback por polling cada 2 s si no hay Supabase
   useEffect(() => {
     const sbClient = supabase;
+    const pollIntervalMs = sbClient ? 10_000 : 2_000;
+    const pollTimer = window.setInterval(() => {
+      void fetchLiveStatus();
+    }, pollIntervalMs);
+
     if (!sbClient) {
-      return;
+      return () => window.clearInterval(pollTimer);
     }
 
     const channel = sbClient
@@ -123,6 +158,7 @@ export function LiveCribPanel({
       .subscribe();
 
     return () => {
+      window.clearInterval(pollTimer);
       void sbClient.removeChannel(channel);
     };
   }, [cunaId, fetchLiveStatus, onCribUpdated]);
@@ -198,6 +234,11 @@ export function LiveCribPanel({
     latest?.masaKg !== null &&
     latest?.masaKg !== undefined &&
     latest.masaKg > presenceThresholdKg;
+  const rgbVisual = resolveRgbLedStatus(live.cuna.modoOperacion);
+  const attentionCountdown =
+    live.cuna.modoOperacion === "atencion"
+      ? formatRemainingCountdown(live.cuna.modoAtencionExpiraEn, countdownNowMs)
+      : null;
 
   const chartData = live.telemetriaReciente.map((t) => ({
     hora: new Date(t.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
@@ -238,6 +279,17 @@ export function LiveCribPanel({
                   : "Supervisión Perimetral Activa (Monitoreo)"}
               </span>
               <span
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium ${rgbVisual.badgeClass}`}
+              >
+                <span className={`h-2 w-2 rounded-full ${rgbVisual.dotClass}`} aria-hidden="true" />
+                {rgbVisual.label}
+              </span>
+              {attentionCountdown && (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 font-mono text-[11px] font-semibold text-amber-900">
+                  Restante: {attentionCountdown}
+                </span>
+              )}
+              <span
                 className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
                   live.cuna.estadoConexion === "en_linea"
                     ? "bg-emerald-50 text-emerald-700"
@@ -249,7 +301,7 @@ export function LiveCribPanel({
                   : "Desconectada (Watchdog RF20)"}
               </span>
               {live.enVentanaGraciaRetiro && (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900 animate-pulse">
                   Ventana de gracia de retiro (5 s)...
                 </span>
               )}
@@ -366,13 +418,19 @@ export function LiveCribPanel({
               max={100}
               step={5}
               value={lightLevel}
-              onChange={(e) => setLightLevel(Number(e.target.value))}
+              onChange={(e) => {
+                isDirtyLightRef.current = true;
+                setLightLevel(Number(e.target.value));
+              }}
               aria-label="Intensidad de luz nocturna"
               className="flex-1"
             />
             <button
               type="button"
-              onClick={() => handleApplyLight(true, lightLevel)}
+              onClick={() => {
+                isDirtyLightRef.current = false;
+                void handleApplyLight(true, lightLevel);
+              }}
               className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600"
             >
               Aplicar {lightLevel} %
@@ -380,7 +438,10 @@ export function LiveCribPanel({
             {live.cuna.luzEncendida && (
               <button
                 type="button"
-                onClick={() => handleApplyLight(false, 0)}
+                onClick={() => {
+                  isDirtyLightRef.current = false;
+                  void handleApplyLight(false, 0);
+                }}
                 className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-100"
               >
                 Apagar
@@ -403,7 +464,15 @@ export function LiveCribPanel({
             {userRole === "principal" && (
               <button
                 type="button"
-                onClick={() => setShowThresholdsForm((v) => !v)}
+                onClick={() => {
+                  setShowThresholdsForm((v) => {
+                    const opening = !v;
+                    if (opening && live) {
+                      syncThresholdInputsFromData(live);
+                    }
+                    return opening;
+                  });
+                }}
                 className="rounded-lg border border-teal-600 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-800 hover:bg-teal-100"
               >
                 {showThresholdsForm ? "Cerrar" : "Configurar"}
@@ -516,10 +585,12 @@ export function LiveCribPanel({
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="hora" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 10 }} />
+                  <YAxis yAxisId="env" tick={{ fontSize: 10 }} />
+                  <YAxis yAxisId="mov" orientation="right" tick={{ fontSize: 10 }} domain={[0, "auto"]} />
                   <Tooltip />
-                  <Line type="monotone" dataKey="tempC" stroke="#0d9488" name="Temp (°C)" dot={false} />
-                  <Line type="monotone" dataKey="humedad" stroke="#0284c7" name="Humedad (%)" dot={false} />
+                  <Line yAxisId="env" type="monotone" dataKey="tempC" stroke="#0d9488" name="Temp (°C)" dot={false} />
+                  <Line yAxisId="env" type="monotone" dataKey="humedad" stroke="#0284c7" name="Humedad (%)" dot={false} />
+                  <Line yAxisId="mov" type="monotone" dataKey="movimiento" stroke="#d97706" name="Mov (kg/m)" dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
