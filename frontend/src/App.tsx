@@ -383,8 +383,10 @@ export default function App() {
                   Cuna Inteligente
                 </h1>
                 {activeCaregiver && (
-                  <span className="hidden sm:inline-flex items-center rounded-full bg-teal-50 border border-teal-200 px-2 py-0.5 text-[11px] font-medium text-teal-800">
-                    Turno: {activeCaregiver.nombre}
+                  <span className="inline-flex items-center gap-1 rounded-full bg-teal-50 border border-teal-200 px-2 py-0.5 text-[11px] font-medium text-teal-800">
+                    <span className="h-1.5 w-1.5 rounded-full bg-teal-500" aria-hidden="true" />
+                    <span className="sm:hidden">{activeCaregiver.nombre.split(" ")[0]}</span>
+                    <span className="hidden sm:inline">Turno: {activeCaregiver.nombre}</span>
                   </span>
                 )}
               </div>
@@ -506,7 +508,7 @@ export default function App() {
               >
                 Continuar con Google
               </button>
-              <p className="text-[11px] text-slate-400">
+              <p className="text-[11px] text-slate-500">
                 Autenticación cifrada mediante Supabase Auth &amp; RLS por familia.
               </p>
             </div>
@@ -569,49 +571,52 @@ export default function App() {
             <nav
               aria-label="Secciones del panel familiar"
               role="tablist"
-              className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm"
+              className="grid grid-cols-3 gap-1.5 sm:flex sm:flex-wrap sm:gap-2 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm"
             >
               <button
                 type="button"
                 role="tab"
                 aria-selected={activeTab === "monitoreo"}
                 onClick={() => setActiveTab("monitoreo")}
-                className={`inline-flex flex-1 min-w-[180px] items-center justify-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors ${
+                className={`inline-flex flex-1 items-center justify-center gap-1.5 sm:gap-2 rounded-xl px-2.5 py-2 sm:px-4 text-xs font-semibold transition-colors text-center ${
                   activeTab === "monitoreo"
                     ? "bg-teal-600 text-white shadow-sm"
                     : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                 }`}
               >
-                <Activity className="h-4 w-4" aria-hidden="true" />
-                Monitoreo y Estímulos
+                <Activity className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span className="hidden sm:inline">Monitoreo y Estímulos</span>
+                <span className="sm:hidden">Monitoreo</span>
               </button>
               <button
                 type="button"
                 role="tab"
                 aria-selected={activeTab === "comunicacion"}
                 onClick={() => setActiveTab("comunicacion")}
-                className={`inline-flex flex-1 min-w-[180px] items-center justify-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors ${
+                className={`inline-flex flex-1 items-center justify-center gap-1.5 sm:gap-2 rounded-xl px-2.5 py-2 sm:px-4 text-xs font-semibold transition-colors text-center ${
                   activeTab === "comunicacion"
                     ? "bg-teal-600 text-white shadow-sm"
                     : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                 }`}
               >
-                <MessageSquare className="h-4 w-4" aria-hidden="true" />
-                Telegram y Recordatorios
+                <MessageSquare className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span className="hidden sm:inline">Telegram y Recordatorios</span>
+                <span className="sm:hidden">Telegram</span>
               </button>
               <button
                 type="button"
                 role="tab"
                 aria-selected={activeTab === "familia"}
                 onClick={() => setActiveTab("familia")}
-                className={`inline-flex flex-1 min-w-[180px] items-center justify-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors ${
+                className={`inline-flex flex-1 items-center justify-center gap-1.5 sm:gap-2 rounded-xl px-2.5 py-2 sm:px-4 text-xs font-semibold transition-colors text-center ${
                   activeTab === "familia"
                     ? "bg-teal-600 text-white shadow-sm"
                     : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                 }`}
               >
-                <Users className="h-4 w-4" aria-hidden="true" />
-                Administración Familiar
+                <Users className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span className="hidden sm:inline">Administración Familiar</span>
+                <span className="sm:hidden">Familia</span>
               </button>
             </nav>
 

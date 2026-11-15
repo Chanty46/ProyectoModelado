@@ -366,7 +366,7 @@ export function FeedingToysAndHistoryPanel({
                 />
               )}
             </div>
-            <div className="flex justify-between text-[10px] text-slate-400">
+            <div className="flex justify-between text-[10px] text-slate-500">
               <span>Frío &lt;35 °C</span>
               <span className="font-medium text-emerald-700">Ideal 35.0–38.5 °C</span>
               <span>Caliente &gt;38.5 °C</span>
@@ -386,10 +386,11 @@ export function FeedingToysAndHistoryPanel({
             <form onSubmit={handleStartFeeding} className="space-y-2.5">
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-[11px] font-medium text-slate-700 mb-0.5">
+                  <label htmlFor="feeding-initial-mass" className="block text-[11px] font-medium text-slate-700 mb-0.5">
                     Masa inicial M_i (≥ 20 g)
                   </label>
                   <input
+                    id="feeding-initial-mass"
                     type="number"
                     step="0.5"
                     min="20"
@@ -401,10 +402,11 @@ export function FeedingToysAndHistoryPanel({
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-medium text-slate-700 mb-0.5">
+                  <label htmlFor="feeding-food-temp" className="block text-[11px] font-medium text-slate-700 mb-0.5">
                     Temperatura IR (°C)
                   </label>
                   <input
+                    id="feeding-food-temp"
                     type="number"
                     step="0.1"
                     required
@@ -692,9 +694,9 @@ export function FeedingToysAndHistoryPanel({
         {/* RF36: Uso reciente de Juguete Didáctico y Móvil de LEDs */}
         <div className="pt-2 border-t border-slate-100">
           <h5 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
-            Actividad de Juguete y Móvil (RF36) ({toysStatus?.historialUso.length ?? 0})
+            Actividad de Juguete y Móvil (RF36) ({toysStatus?.historialUso?.length ?? 0})
           </h5>
-          {!toysStatus || toysStatus.historialUso.length === 0 ? (
+          {!toysStatus || !toysStatus.historialUso || toysStatus.historialUso.length === 0 ? (
             <p className="text-xs text-slate-500">Sin sesiones recientes de juguete didáctico o móvil.</p>
           ) : (
             <ul className="max-h-28 overflow-y-auto divide-y divide-slate-100 text-xs">
