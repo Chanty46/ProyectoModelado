@@ -161,48 +161,51 @@ SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES (HITO M11)
 ===================================================================================
 1. Backend C# (.NET 8 LTS — xUnit):
    - Archivo de solución: backend/CunaServer.sln
-   - Pruebas ejecutadas: 31 pruebas
-   - Estado: 31 PASADAS / 0 FALLIDAS (Duración: 3.80 s incl. benchmarks)
-   - Cobertura: Cuentas familiares, RLS, TCP framing (ArrayPool TcpLineReader),
-     máquina de estados, watchdog, bot de Telegram HTTP + deep-link /start + 429 retry,
-     spikes de audio, cálculo de ml, CSV sanitization y checklist E2E.
+   - Pruebas ejecutadas: 49 pruebas
+   - Estado: 49 PASADAS / 0 FALLIDAS (Duración: 1 s)
+   - Cobertura: Cuentas familiares, RLS, contratos HTTP PostgREST con mock
+     (PostgrestFamilyAccountRepository y PostgrestDeviceTelemetryRepository),
+     TCP framing (ArrayPool TcpLineReader), máquina de estados, consolidación
+     multi-dispositivo, watchdog, bot de Telegram HTTP + deep-link /start + 429 retry,
+     spikes de audio, cálculo de ml, CSV sanitization, PDF WinAnsiEncoding + envoltura
+     de líneas <= 92 columnas y checklist E2E.
 
 2. Simuladores TCP (Python 3 — unittest):
    - Módulo: simulators/test_simulators.py
-   - Pruebas ejecutadas: 8 pruebas
-   - Estado: 8 PASADAS / 0 FALLIDAS (Duración: 0.040 s)
+   - Pruebas ejecutadas: 10 pruebas
+   - Estado: 10 PASADAS / 0 FALLIDAS (Duración: 0.028 s)
    - Cobertura: Detección de retiro <= 1 s, filtro de ruido 5 Hz O(1), rampa de luz PWM,
-     decodificación PCM de audio, rechazo de tramas > 4 KB, estrés 10000 ticks y backoff <= 30 s.
+     decodificación PCM de audio, rechazo de tramas > 4 KB, estrés 10000 ticks,
+     backoff <= 30 s y manejo de comandos intercalados antes del ack.
 
 3. Firmware MicroPython (RP2040 — unittest):
    - Módulo: firmware/test_firmware.py
    - Pruebas ejecutadas: 7 pruebas
-   - Estado: 7 PASADAS / 0 FALLIDAS (Duración: 0.019 s)
+   - Estado: 7 PASADAS / 0 FALLIDAS (Duración: 0.009 s)
    - Cobertura: Asignación de pines RP2040 (GPIO 0-28), búfer circular de 48 h (2880 reg),
      máquina de estados de los 5 nodos, compatibilidad de notas SQL/memoria y vaciado TCP.
 
 4. Frontend React (TypeScript + Node Test + Vite):
-   - Pruebas unitarias de helpers: npm test (5 PASADAS / 0 FALLIDAS — formatters.test.ts)
+   - Pruebas unitarias de helpers: npm test (9 PASADAS / 0 FALLIDAS — formatters.test.ts)
    - Verificación de tipos: tsc --noEmit / tsc -b (0 ERRORES)
    - Empaquetado de producción: vite build (2098 módulos transformados)
 
 5. Diagnóstico y Validación Telegram Bot API (scripts/test_telegram.py):
-   - Mock HTTP Bot API (`--mock`): getMe + sendMessage chat_id=50683021112 [OK]
-   - Sonda de red (`--probe-network`): https://api.telegram.org alcanzable (HTTP 401 sin token real)
+   - Mock HTTP Bot API (`--mock`): getMe + sendMessage chat_id=990001234 [OK]
 
 6. Auditoría de Seguridad (verify_environment.py):
    - Escaneo de secretos reales (sb_secret, tokens, contraseñas): 0 COINCIDENCIAS
 ===================================================================================
-TOTAL: 51 pruebas automáticas + verificación HTTP Bot API mock con 100 % de éxito.
+TOTAL: 75 pruebas automáticas + verificación HTTP Bot API mock con 100 % de éxito.
 ===================================================================================
 ```
 
 ### 4.1 Métricas de Rendimiento y Refinamiento Técnico (Hito M11)
-- **Parser TCP (`TcpLineReader` con `ArrayPool<byte>`)**: `10 000` líneas procesadas en `7.49 ms` (`1 335 220 líneas/s`).
-- **Validación JWT ES256 con caché JWKS (`CachedJwksSnapshot`)**: `2 000` verificaciones en `197.16 ms` (`10 144 ops/s`).
-- **Latencia de consulta en vivo (`GET /api/cribs/{id}/live`)**: `50` consultas en `49.04 ms` (promedio `0.98 ms/req`).
-- **Exportación RF32 (CSV + PDF, 120 registros)**: `26.99 ms` (presupuesto `< 10 000 ms`).
-- **Higiene y estabilidad**: helper unificado de autorización familiar y endpoints, límite en colas de telemetría/alertas/auditoría en memoria, eliminación de consultas N+1 hacia PostgREST de Telegram, prevención de sobrescritura de sliders al editar en frontend y soporte real de micrófono Web Audio API en el intercomunicador.
+- **Parser TCP (`TcpLineReader` con `ArrayPool<byte>`)**: `10 000` líneas procesadas en `3.56 ms` (`2 808 358 líneas/s`).
+- **Validación JWT ES256 con caché JWKS (`CachedJwksSnapshot`)**: `2 000` verificaciones en `103.56 ms` (`19 312 ops/s`).
+- **Latencia de consulta en vivo (`GET /api/cribs/{id}/live`)**: `50` consultas en `32.45 ms` (promedio `0.65 ms/req`).
+- **Exportación RF32 (CSV + PDF, 120 registros)**: `21.85 ms` (presupuesto `< 10 000 ms`); PDF multipágina verificado con `pdfinfo`/`pdftotext` (612x792 pts, máx. 85 columnas por línea).
+- **Higiene, UI y robustez**: helper unificado de autorización familiar y endpoints, límite en colas de telemetría/alertas/auditoría en memoria, eliminación de consultas N+1 hacia PostgREST de Telegram, prevención de sobrescritura de sliders al editar en frontend, soporte real de micrófono Web Audio API en el intercomunicador, corrección de autocierre del formulario de umbrales (`showThresholdsFormRef`), parseo estricto de entradas numéricas opcionales (`parseOptionalFiniteNumber` evitando alertas falsas `0.0 °C`), escape y ajuste de márgenes en PDF RF32, y pruebas unitarias HTTP de los repositorios PostgREST.
 
 ---
 
