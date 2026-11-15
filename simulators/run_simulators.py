@@ -64,7 +64,14 @@ DEFAULT_SIM_DEVICES: Dict[str, Dict[str, str]] = {
 
 
 class DeviceSimulatorNode:
-    def __init__(self, host: str, port: int, kind: str, once: bool = False) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        kind: str,
+        once: bool = False,
+        telemetry_interval_s: float = 60.0,
+    ) -> None:
         info = DEFAULT_SIM_DEVICES[kind]
         self.host = host
         self.port = port
@@ -73,9 +80,11 @@ class DeviceSimulatorNode:
         self.device_type = info["device_type"]
         self.token = os.environ.get(info["token_env"], info["default_demo_token"])
         self.once = once
+        self.telemetry_interval_s = max(1.0, telemetry_interval_s)
         self.buffer = OfflineRingBuffer()
         self.mattress_engine = MattressRuleEngine()
         self.central_engine = CentralEnvRuleEngine()
+        self._cycle = 0
 
     async def run(self) -> None:
         attempt = 0
@@ -91,6 +100,35 @@ class DeviceSimulatorNode:
                     raise
                 attempt += 1
                 await asyncio.sleep(compute_backoff_seconds(attempt))
+
+    async def _send_command_ack(self, writer: asyncio.StreamWriter, msg: Dict[str, Any]) -> None:
+        cmd_id = str(msg.get("d", {}).get("id", ""))
+        ack_line = build_envelope("ack", self.buffer.next_seq(), {"id": cmd_id, "ok": True})
+        writer.write(ack_line.encode("utf-8"))
+        await writer.drain()
+
+    async def _await_ack_for_seq(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        seq: int,
+    ) -> None:
+        deadline = time.monotonic() + 5.0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            resp = await asyncio.wait_for(reader.readline(), timeout=remaining)
+            if not resp:
+                return
+            resp_obj = json.loads(resp.decode("utf-8"))
+            msg_type = resp_obj.get("t")
+            if msg_type == "command":
+                await self._send_command_ack(writer, resp_obj)
+                continue
+            if msg_type == "ack" and str(resp_obj.get("d", {}).get("id", "")) == str(seq):
+                self.buffer.ack_up_to(seq)
+                return
 
     async def _handle_session(
         self,
@@ -119,7 +157,9 @@ class DeviceSimulatorNode:
             if ack_msg.get("t") != "hello_ack" or not ack_msg.get("d", {}).get("session_ok"):
                 raise PermissionError(f"Fallo de autenticación hello: {ack_msg}")
 
-            cfg = ack_msg.get("d", {}).get("config", {})
+            ack_data = ack_msg.get("d", {})
+            self.buffer.sync_with_server(ack_data.get("last_seq", 0))
+            cfg = ack_data.get("config", {})
             if "mass_scale" in cfg:
                 self.mattress_engine.mass_scale = float(cfg["mass_scale"])
 
@@ -128,11 +168,7 @@ class DeviceSimulatorNode:
                 line = json.dumps(pending, separators=(",", ":")) + "\n"
                 writer.write(line.encode("utf-8"))
                 await writer.drain()
-                resp = await asyncio.wait_for(reader.readline(), timeout=5.0)
-                if resp:
-                    resp_obj = json.loads(resp.decode("utf-8"))
-                    if resp_obj.get("t") == "ack":
-                        self.buffer.ack_up_to(pending["seq"])
+                await self._await_ack_for_seq(reader, writer, pending["seq"])
 
             # Enviar heartbeat y una muestra de telemetría/evento según el tipo de dispositivo
             hb_line = build_envelope("heartbeat", 0, {"uptime_s": 15, "battery_pct": 95})
@@ -153,10 +189,7 @@ class DeviceSimulatorNode:
                         break
                     msg = json.loads(line.decode("utf-8"))
                     if msg.get("t") == "command":
-                        cmd_id = msg.get("d", {}).get("id", "")
-                        ack_line = build_envelope("ack", self.buffer.next_seq(), {"id": cmd_id, "ok": True})
-                        writer.write(ack_line.encode("utf-8"))
-                        await writer.drain()
+                        await self._send_command_ack(writer, msg)
                 except asyncio.TimeoutError:
                     pass
 
@@ -167,7 +200,7 @@ class DeviceSimulatorNode:
                     await writer.drain()
                     last_heartbeat = now
 
-                if now - last_telemetry >= 60.0:
+                if now - last_telemetry >= self.telemetry_interval_s:
                     await self._emit_sample_cycle(reader, writer)
                     last_telemetry = now
         finally:
@@ -182,38 +215,52 @@ class DeviceSimulatorNode:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        self._cycle += 1
+        phase = self._cycle % 4
         if self.device_type == "central":
-            entry = self.buffer.enqueue("telemetry", {"temp_c": 22.5, "hum_pct": 50.0})
+            temp_c = round(22.3 + phase * 0.15, 2)
+            hum_pct = round(49.0 + phase * 0.6, 1)
+            self.central_engine.evaluate_env(time.monotonic(), temp_c, hum_pct)
+            entry = self.buffer.enqueue("telemetry", {"temp_c": temp_c, "hum_pct": hum_pct})
         elif self.device_type == "colchon":
             now = time.time()
-            self.mattress_engine.process_sample(now, 0.650)
-            self.mattress_engine.process_sample(now + 0.2, 0.668)
-            telemetry_data = self.mattress_engine.pop_minute_telemetry(0.660)
+            base_mass = 0.650 + phase * 0.004
+            self.mattress_engine.process_sample(now, base_mass)
+            self.mattress_engine.process_sample(now + 0.2, base_mass + 0.018)
+            telemetry_data = self.mattress_engine.pop_minute_telemetry(round(base_mass + 0.010, 3))
             entry = self.buffer.enqueue("telemetry", telemetry_data)
         elif self.device_type == "biberon":
-            entry = self.buffer.enqueue("telemetry", {"mass_g": 145.0, "temp_c": 36.8, "battery_pct": 88})
+            entry = self.buffer.enqueue(
+                "telemetry",
+                {"mass_g": 145.0, "temp_c": round(36.7 + (phase % 2) * 0.1, 2), "battery_pct": 88},
+            )
         elif self.device_type == "juguete":
-            entry = self.buffer.enqueue("event", {"kind": "game_end", "hits": 5, "secs": 18})
+            entry = self.buffer.enqueue("event", {"kind": "game_end", "hits": 5 + phase, "secs": 18})
         else:  # movil
             entry = self.buffer.enqueue(
                 "event",
-                {"kind": "mobile_session_end", "secs": 120, "pattern": "onda", "speed": "media"},
+                {"kind": "mobile_session_end", "secs": 120, "pattern": "ola_circular", "speed": "media"},
             )
 
         writer.write((json.dumps(entry, separators=(",", ":")) + "\n").encode("utf-8"))
         await writer.drain()
-        resp = await asyncio.wait_for(reader.readline(), timeout=5.0)
-        if resp:
-            resp_obj = json.loads(resp.decode("utf-8"))
-            if resp_obj.get("t") == "ack":
-                self.buffer.ack_up_to(entry["seq"])
+        await self._await_ack_for_seq(reader, writer, entry["seq"])
 
 
 async def main_async(args: argparse.Namespace) -> None:
     kinds: List[str] = (
         list(DEFAULT_SIM_DEVICES.keys()) if args.device == "all" else [args.device]
     )
-    nodes = [DeviceSimulatorNode(args.host, args.port, k, once=args.once) for k in kinds]
+    nodes = [
+        DeviceSimulatorNode(
+            args.host,
+            args.port,
+            k,
+            once=args.once,
+            telemetry_interval_s=args.telemetry_interval,
+        )
+        for k in kinds
+    ]
     await asyncio.gather(*(n.run() for n in nodes))
 
 
@@ -227,6 +274,12 @@ def main() -> None:
         default="all",
     )
     parser.add_argument("--once", action="store_true", help="Ejecuta un ciclo de conexión y termina")
+    parser.add_argument(
+        "--telemetry-interval",
+        type=float,
+        default=60.0,
+        help="Intervalo entre envíos de telemetría en modo continuo (s)",
+    )
     args = parser.parse_args()
     asyncio.run(main_async(args))
 

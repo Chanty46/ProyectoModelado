@@ -3,7 +3,7 @@
 
 Nota arquitectónica importante (Telegram Bot API):
 Los bots de Telegram NO pueden iniciar conversaciones ni enviar mensajes directamente a un
-número telefónico (por ejemplo +506 83021112) por restricciones de privacidad de Telegram.
+número telefónico (por ejemplo +506 8000-0000) por restricciones de privacidad de Telegram.
 Para recibir notificaciones, el propietario del número debe abrir
 https://t.me/CunasInteligentes_Modelado_Bot, enviar /start (o abrir el enlace profundo) y
 vincular su Chat ID numérico con /vincular CODIGO.
@@ -26,24 +26,36 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+def _normalize_bot_token(raw: str) -> str:
+    token = raw.strip().strip('"').strip("'")
+    if token.lower().startswith("bot") and len(token) > 4 and token[3].isdigit() and ":" in token:
+        token = token[3:]
+    return token
+
+
 def load_bot_token_from_env_files(repo_root: Path) -> str | None:
-    """Lee TELEGRAM_BOT_TOKEN del entorno o de backend/.env localmente sin imprimirlo jamás."""
+    """Lee TELEGRAM_BOT_TOKEN del entorno o de backend/.env / .env sin imprimirlo jamás."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if token:
-        return token
+        return _normalize_bot_token(token) or None
 
-    env_path = repo_root / "backend" / ".env"
-    if not env_path.is_file():
-        return None
-
-    for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    for env_path in (repo_root / "backend" / ".env", repo_root / ".env"):
+        if not env_path.is_file():
             continue
-        key, val = line.split("=", 1)
-        if key.strip() == "TELEGRAM_BOT_TOKEN":
-            cleaned = val.strip().strip('"').strip("'")
-            return cleaned or None
+
+        for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            if "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            if key.strip() == "TELEGRAM_BOT_TOKEN":
+                cleaned = _normalize_bot_token(val)
+                if cleaned:
+                    return cleaned
     return None
 
 
@@ -101,7 +113,7 @@ def run_mock_roundtrip() -> int:
                         "result": [
                             {
                                 "update_id": 1001,
-                                "message": {"chat": {"id": 50683021112}, "text": "/start TG-DEMO12345"},
+                                "message": {"chat": {"id": 990001234}, "text": "/start TG-DEMO12345"},
                             }
                         ],
                     },
@@ -158,6 +170,7 @@ def main() -> int:
     parser.add_argument("--probe-network", action="store_true", help="Verificar alcance HTTPS hacia api.telegram.org.")
     parser.add_argument("--chat-id", type=int, help="Chat ID numérico de Telegram obtenido tras /start o /mi_chat.")
     parser.add_argument("--send", action="store_true", help="Enviar mensaje de prueba al --chat-id usando TELEGRAM_BOT_TOKEN local.")
+    parser.add_argument("--delete-webhook", action="store_true", help="Eliminar webhook activo para permitir sondeo getUpdates.")
     parser.add_argument("--message", default="[PRUEBA] Cuna Inteligente: verificación de Bot API.", help="Texto del mensaje de prueba.")
     args = parser.parse_args()
 
@@ -174,7 +187,7 @@ def main() -> int:
     token = load_bot_token_from_env_files(repo_root)
     if not token:
         print("[INFO] TELEGRAM_BOT_TOKEN no está configurado en entorno ni en backend/.env (modo demo InMemory).")
-        print("[INFO] Telegram Bot API NO permite enviar directo a +506 83021112 por número telefónico;")
+        print("[INFO] Telegram Bot API NO permite enviar directo a +506 8000-0000 por número telefónico;")
         print("       el destinatario debe abrir @CunasInteligentes_Modelado_Bot, enviar /start y vincular su Chat ID.")
         return 0
 
@@ -186,7 +199,20 @@ def main() -> int:
     bot_username = me_body.get("result", {}).get("username", "desconocido")
     print(f"[OK] Bot autenticado correctamente: @{bot_username}")
 
+    st_wh, wh_body = telegram_request("https://api.telegram.org", token, "getWebhookInfo")
+    webhook_url = (wh_body.get("result") or {}).get("url", "") if st_wh == 200 and wh_body.get("ok") else ""
+    if webhook_url:
+        print(f"[WARN] Webhook activo detectado (bloquea getUpdates): {webhook_url}")
+        if args.delete_webhook:
+            st_del, del_body = telegram_request("https://api.telegram.org", token, "deleteWebhook?drop_pending_updates=false")
+            print(f"[{'OK' if st_del == 200 and del_body.get('ok') else 'ERROR'}] deleteWebhook ejecutado.")
+    elif args.delete_webhook:
+        telegram_request("https://api.telegram.org", token, "deleteWebhook?drop_pending_updates=false")
+        print("[OK] Sin webhook activo (deleteWebhook verificado).")
+
     st_upd, upd_body = telegram_request("https://api.telegram.org", token, "getUpdates?limit=10")
+    if st_upd != 200 or not upd_body.get("ok"):
+        print(f"[WARN] getUpdates respondió HTTP {st_upd}: {upd_body.get('description', 'sin detalle')}")
     updates = upd_body.get("result", []) if st_upd == 200 and upd_body.get("ok") else []
     known_chats = sorted({u["message"]["chat"]["id"] for u in updates if isinstance(u.get("message"), dict) and isinstance(u["message"].get("chat"), dict)})
     print(f"[INFO] Chats recientes visibles en getUpdates: {known_chats if known_chats else 'ninguno'}")
@@ -194,7 +220,7 @@ def main() -> int:
     if args.send:
         target_chat = args.chat_id or (known_chats[0] if len(known_chats) == 1 else None)
         if target_chat is None:
-            print("[ERROR] Especifica --chat-id numérico (recuerda: Bot API no acepta +506 83021112 como destino).")
+            print("[ERROR] Especifica --chat-id numérico (recuerda: Bot API no acepta +506 8000-0000 como destino).")
             return 2
         st_send, send_body = telegram_request(
             "https://api.telegram.org",

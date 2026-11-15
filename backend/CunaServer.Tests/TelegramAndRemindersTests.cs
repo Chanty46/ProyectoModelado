@@ -16,6 +16,7 @@ public class TelegramAndRemindersTests
 {
     private static readonly Guid PrincipalUserId = Guid.Parse("33333333-3333-3333-3333-333333333301");
     private static readonly Guid SecondaryUserId = Guid.Parse("33333333-3333-3333-3333-333333333302");
+    private static readonly Guid ThirdUserId = Guid.Parse("33333333-3333-3333-3333-333333333303");
 
     private WebApplicationFactory<Program> CreateTestFactory(
         out InMemoryFamilyAccountRepository accountRepo,
@@ -201,31 +202,39 @@ public class TelegramAndRemindersTests
 
         // Deep-link /start CODIGO vincula automáticamente sin exigir segundo comando
         var now = DateTimeOffset.UtcNow;
-        await botService.ProcessInboundCommandAsync(50683021112, $"/start {code.Codigo}", now, CancellationToken.None);
+        await botService.ProcessInboundCommandAsync(990001234, $"/start {code.Codigo}", now, CancellationToken.None);
         Assert.Contains(tgTransport.GetSentMessages(), m =>
-            m.ChatId == 50683021112 && m.Text.Contains("vinculado correctamente"));
+            m.ChatId == 990001234 && m.Text.Contains("vinculado correctamente"));
 
-        await botService.ProcessInboundCommandAsync(50683021112, "/mi_chat", now, CancellationToken.None);
+        await botService.ProcessInboundCommandAsync(990001234, "/mi_chat", now, CancellationToken.None);
         Assert.Contains(tgTransport.GetSentMessages(), m =>
-            m.ChatId == 50683021112 && m.Text.Contains("50683021112") && m.Text.Contains("principal@cuna.local"));
+            m.ChatId == 990001234 && m.Text.Contains("990001234") && m.Text.Contains("principal@cuna.local"));
 
         var testResp = await client.PostAsync("/api/telegram/test", null);
         Assert.Equal(HttpStatusCode.OK, testResp.StatusCode);
         var testBody = await testResp.Content.ReadFromJsonAsync<TelegramTestMessageResponse>();
         Assert.NotNull(testBody);
         Assert.True(testBody!.Sent);
-        Assert.Equal(50683021112, testBody.ChatId);
+        Assert.Equal(990001234, testBody.ChatId);
         Assert.Contains(tgTransport.GetSentMessages(), m =>
-            m.ChatId == 50683021112 && m.Text.Contains("[PRUEBA]"));
+            m.ChatId == 990001234 && m.Text.Contains("[PRUEBA]"));
     }
 
     [Fact]
     public async Task HttpTelegramBotTransport_HandlesGetMeUpdatesSendMessage_And429Retry()
     {
         var sendAttempts = 0;
+        var webhookDeleted = false;
+        var seenOffsets = new List<string>();
         using var handler = new StubHttpMessageHandler((req, _) =>
         {
             var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.EndsWith("/deleteWebhook", StringComparison.Ordinal))
+            {
+                webhookDeleted = true;
+                return JsonResponse(HttpStatusCode.OK, """{"ok":true,"result":true}""");
+            }
+
             if (path.EndsWith("/getMe", StringComparison.Ordinal))
             {
                 return JsonResponse(HttpStatusCode.OK, """{"ok":true,"result":{"id":1001,"is_bot":true,"username":"CunasInteligentes_Modelado_Bot"}}""");
@@ -233,7 +242,22 @@ public class TelegramAndRemindersTests
 
             if (path.EndsWith("/getUpdates", StringComparison.Ordinal))
             {
-                return JsonResponse(HttpStatusCode.OK, """{"ok":true,"result":[{"update_id":42,"message":{"chat":{"id":50683021112},"text":"/estado"}}]}""");
+                seenOffsets.Add(req.RequestUri?.Query ?? "");
+                if (seenOffsets.Count == 1)
+                {
+                    // Incluye un update no textual (41) antes del comando (42) y otro no textual después (43)
+                    return JsonResponse(HttpStatusCode.OK, """
+                        {
+                          "ok": true,
+                          "result": [
+                            {"update_id": 41, "message": {"chat": {"id": 990001234}}},
+                            {"update_id": 42, "message": {"chat": {"id": 990001234}, "text": "/estado"}},
+                            {"update_id": 43, "message": {"chat": {"id": 990001234}}}
+                          ]
+                        }
+                        """);
+                }
+                return JsonResponse(HttpStatusCode.OK, """{"ok":true,"result":[]}""");
             }
 
             if (path.EndsWith("/sendMessage", StringComparison.Ordinal))
@@ -252,7 +276,7 @@ public class TelegramAndRemindersTests
         using var http = new HttpClient(handler);
         var transport = new HttpTelegramBotTransport(
             http,
-            "000000:TEST-TOKEN-NOT-REAL",
+            "bot000000:TEST-TOKEN-NOT-REAL",
             NullLogger<HttpTelegramBotTransport>.Instance,
             "https://mock.telegram.local");
 
@@ -262,13 +286,124 @@ public class TelegramAndRemindersTests
         Assert.Equal("CunasInteligentes_Modelado_Bot", probe.ResolvedUsername);
 
         var updates = await transport.GetUpdatesAsync(1, CancellationToken.None);
+        Assert.True(webhookDeleted);
         Assert.Single(updates);
-        Assert.Equal(50683021112, updates[0].ChatId);
+        Assert.Equal(990001234, updates[0].ChatId);
         Assert.Equal("/estado", updates[0].Text);
 
-        var delivered = await transport.SendMessageAsync(50683021112, "Alerta prueba", CancellationToken.None);
+        // La segunda consulta debe pedir offset=44 (avanzando más allá del update no textual 43)
+        await transport.GetUpdatesAsync(43, CancellationToken.None);
+        Assert.Equal(2, seenOffsets.Count);
+        Assert.Contains("offset=44", seenOffsets[1]);
+
+        var delivered = await transport.SendMessageAsync(990001234, "Alerta prueba", CancellationToken.None);
         Assert.True(delivered);
         Assert.Equal(2, sendAttempts);
+    }
+
+    [Fact]
+    public async Task RF39_StatusCommand_ConsolidatesMultiDeviceTelemetryIncludingBottle()
+    {
+        await using var factory = CreateTestFactory(
+            out _,
+            out var deviceRepo,
+            out var tgTransport);
+        using var client = factory.CreateClient();
+        var botService = factory.Services.GetRequiredService<TelegramBotService>();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia MultiTG", "Mamá", "M1"));
+        await client.PostAsync("/api/pairing/window", null);
+
+        var claimCentralResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-central-nuevo",
+            "RECLAMO-CENTRAL-1001",
+            null,
+            "Cuna Consolidada"));
+        var claimedCentral = await claimCentralResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+        var cunaId = claimedCentral!.CunaId;
+
+        var claimColchonResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-colchon-nuevo",
+            "RECLAMO-COLCHON-1002",
+            cunaId,
+            null));
+        var claimedColchon = await claimColchonResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+
+        var claimBiberonResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-biberon-nuevo",
+            "RECLAMO-BIBERON-1004",
+            cunaId,
+            null));
+        var claimedBiberon = await claimBiberonResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+
+        var t0 = DateTimeOffset.UtcNow.AddSeconds(-30);
+        await deviceRepo.SaveTelemetryAsync(new TelemetryRecord(
+            cunaId, claimedColchon!.DeviceRowId, t0, 3.450m, 0.031m, null, null, null, null, null, 1), CancellationToken.None);
+        await deviceRepo.SaveTelemetryAsync(new TelemetryRecord(
+            cunaId, claimedCentral.DeviceRowId, t0.AddSeconds(5), null, null, 22.4m, 48.0m, null, null, null, 1), CancellationToken.None);
+        await deviceRepo.SaveTelemetryAsync(new TelemetryRecord(
+            cunaId, claimedBiberon!.DeviceRowId, t0.AddSeconds(10), null, null, null, null, 185m, 36.9m, 92, 1), CancellationToken.None);
+
+        var codeResp = await client.PostAsync("/api/telegram/link-code", null);
+        var code = await codeResp.Content.ReadFromJsonAsync<GenerateTelegramCodeResponse>();
+        var now = DateTimeOffset.UtcNow;
+        await botService.ProcessInboundCommandAsync(45001, $"/vincular {code!.Codigo}", now, CancellationToken.None);
+
+        await botService.ProcessInboundCommandAsync(45001, "/estado", now, CancellationToken.None);
+        var msg = tgTransport.GetSentMessages().Last(m => m.ChatId == 45001);
+        Assert.Contains("Cuna Consolidada", msg.Text);
+        Assert.Contains("T=22.4 °C", msg.Text);
+        Assert.Contains("H=48.0 %", msg.Text);
+        Assert.Contains("Masa=3.450 kg", msg.Text);
+        Assert.Contains("Biberón=36.9 °C / 185 g", msg.Text);
+    }
+
+    [Fact]
+    public async Task RF38_FailedLinkAttempts_RateLimitAttackerChat_WithoutLockingOtherFamilies()
+    {
+        await using var factory = CreateTestFactory(
+            out var accountRepo,
+            out _,
+            out var tgTransport);
+        using var client = factory.CreateClient();
+        var botService = factory.Services.GetRequiredService<TelegramBotService>();
+
+        // Familia A (PrincipalUserId) genera su código
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia A", "Mamá A", "FA"));
+        var codeAResp = await client.PostAsync("/api/telegram/link-code", null);
+        var codeA = await codeAResp.Content.ReadFromJsonAsync<GenerateTelegramCodeResponse>();
+
+        // Familia B (ThirdUserId) genera su código en paralelo
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-tercero");
+        await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia B", "Papá B", "FB"));
+        var codeBResp = await client.PostAsync("/api/telegram/link-code", null);
+        var codeB = await codeBResp.Content.ReadFromJsonAsync<GenerateTelegramCodeResponse>();
+
+        var now = DateTimeOffset.UtcNow;
+        // Atacante (chat 888001) intenta 5 códigos inválidos -> bloqueado por chat_id
+        for (var i = 0; i < TelegramBotService.MaxFailedLinkAttemptsPerChat; i++)
+        {
+            await botService.ProcessInboundCommandAsync(888001, $"/vincular INVALIDO{i}", now.AddSeconds(i), CancellationToken.None);
+        }
+
+        var blockedReply = tgTransport.GetSentMessages().Last(m => m.ChatId == 888001);
+        Assert.Contains("Demasiados intentos", blockedReply.Text);
+
+        // El atacante sigue bloqueado incluso si probara un código real dentro de la ventana de 10 min
+        await botService.ProcessInboundCommandAsync(888001, $"/vincular {codeA!.Codigo}", now.AddSeconds(30), CancellationToken.None);
+        var stillBlocked = tgTransport.GetSentMessages().Last(m => m.ChatId == 888001);
+        Assert.Contains("Demasiados intentos", stillBlocked.Text);
+
+        // Los códigos de Familia A y Familia B NO se vieron afectados y vinculan correctamente desde chats legítimos
+        await botService.ProcessInboundCommandAsync(999001, $"/vincular {codeA.Codigo}", now.AddSeconds(35), CancellationToken.None);
+        await botService.ProcessInboundCommandAsync(999002, $"/vincular {codeB!.Codigo}", now.AddSeconds(36), CancellationToken.None);
+
+        var linkA = await accountRepo.GetTelegramLinkByUserAsync(PrincipalUserId, CancellationToken.None);
+        var linkB = await accountRepo.GetTelegramLinkByUserAsync(ThirdUserId, CancellationToken.None);
+        Assert.Equal(999001, linkA?.ChatId);
+        Assert.Equal(999002, linkB?.ChatId);
     }
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string json)
@@ -300,6 +435,8 @@ public class TelegramAndRemindersTests
                     new AuthenticatedIdentity(PrincipalUserId, "principal@cuna.local")),
                 "token-secundario" => Task.FromResult<AuthenticatedIdentity?>(
                     new AuthenticatedIdentity(SecondaryUserId, "secundario@cuna.local")),
+                "token-tercero" => Task.FromResult<AuthenticatedIdentity?>(
+                    new AuthenticatedIdentity(ThirdUserId, "tercero@cuna.local")),
                 _ => Task.FromResult<AuthenticatedIdentity?>(null)
             };
         }

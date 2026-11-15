@@ -73,6 +73,13 @@ class OfflineRingBuffer:
         while self._queue and self._queue[0]["seq"] <= acked_seq:
             self._queue.popleft()
 
+    def sync_with_server(self, server_last_seq: int) -> None:
+        """Tras hello_ack: evita reutilizar un seq que el servidor ya procesó."""
+        server_seq = int(server_last_seq or 0)
+        if server_seq > self._seq:
+            self._seq = server_seq
+        self.ack_up_to(min(server_seq, self._seq))
+
     def pending_messages(self) -> List[Dict[str, Any]]:
         return list(self._queue)
 

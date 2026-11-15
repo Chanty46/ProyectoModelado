@@ -47,17 +47,19 @@ public sealed class FamilyAccountService
             return new AccountContextResponse(identity.UserId, identity.Email, null, null, [], []);
         }
 
-        var family = await _repository.GetFamilyAsync(membership.FamilyId, ct);
-        var profiles = await _repository.ListActiveProfilesAsync(membership.FamilyId, ct);
-        var members = await _repository.ListFamilyMembersAsync(membership.FamilyId, ct);
+        var familyTask = _repository.GetFamilyAsync(membership.FamilyId, ct);
+        var profilesTask = _repository.ListActiveProfilesAsync(membership.FamilyId, ct);
+        var membersTask = _repository.ListFamilyMembersAsync(membership.FamilyId, ct);
+
+        await Task.WhenAll(familyTask, profilesTask, membersTask);
 
         return new AccountContextResponse(
             identity.UserId,
             identity.Email,
-            family,
+            await familyTask,
             membership.Rol,
-            profiles,
-            members);
+            await profilesTask,
+            await membersTask);
     }
 
     public async Task<ServiceResult<AccountContextResponse>> BootstrapPrincipalAccountAsync(

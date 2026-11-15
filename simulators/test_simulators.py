@@ -116,6 +116,51 @@ class SimulatorProtocolAndRulesTests(unittest.TestCase):
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         self.assertLess(elapsed_ms, 500.0)
 
+    def test_simulator_node_handles_interleaved_command_before_ack(self) -> None:
+        import asyncio
+        import json
+        try:
+            from simulators.run_simulators import DeviceSimulatorNode
+        except ImportError:
+            from run_simulators import DeviceSimulatorNode
+
+        class FakeWriter:
+            def __init__(self) -> None:
+                self.lines: list[dict] = []
+
+            def write(self, data: bytes) -> None:
+                self.lines.append(json.loads(data.decode("utf-8")))
+
+            async def drain(self) -> None:
+                return None
+
+        async def scenario() -> None:
+            node = DeviceSimulatorNode("127.0.0.1", 9000, "central", once=True)
+            entry = node.buffer.enqueue("telemetry", {"temp_c": 22.5, "hum_pct": 50.0})
+            reader = asyncio.StreamReader()
+            cmd_line = build_envelope("command", 9, {"id": "cmd-abc", "cmd": "light_set", "params": {"on": True}})
+            ack_line = build_envelope("ack", 10, {"id": str(entry["seq"]), "ok": True})
+            reader.feed_data((cmd_line + ack_line).encode("utf-8"))
+            reader.feed_eof()
+
+            writer = FakeWriter()
+            await node._await_ack_for_seq(reader, writer, entry["seq"])
+            self.assertEqual(node.buffer.pending_messages(), [])
+            self.assertEqual(len(writer.lines), 1)
+            self.assertEqual(writer.lines[0]["t"], "ack")
+            self.assertEqual(writer.lines[0]["d"]["id"], "cmd-abc")
+
+        asyncio.run(scenario())
+
+    def test_offline_ring_buffer_syncs_seq_with_server(self) -> None:
+        buf = OfflineRingBuffer(capacity=10)
+        buf.enqueue("telemetry", {"temp_c": 21.0})
+        buf.sync_with_server(42)
+        self.assertEqual(buf.current_seq, 42)
+        self.assertEqual(buf.pending_messages(), [])
+        next_msg = buf.enqueue("telemetry", {"temp_c": 22.0})
+        self.assertEqual(next_msg["seq"], 43)
+
 
 if __name__ == "__main__":
     unittest.main()

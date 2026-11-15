@@ -89,6 +89,8 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
     private readonly string _botToken;
     private readonly string _apiBaseUrl;
     private readonly ILogger<HttpTelegramBotTransport> _logger;
+    private int _webhookCleared;
+    private long _highestSeenUpdateId;
 
     public HttpTelegramBotTransport(
         HttpClient http,
@@ -97,22 +99,68 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
         string apiBaseUrl = "https://api.telegram.org")
     {
         _http = http;
-        _botToken = botToken.Trim();
+        _botToken = NormalizeBotToken(botToken);
         _apiBaseUrl = apiBaseUrl.TrimEnd('/');
         _logger = logger;
+    }
+
+    private static string NormalizeBotToken(string rawToken)
+    {
+        var token = (rawToken ?? string.Empty).Trim().Trim('"', '\'');
+        if (token.StartsWith("bot", StringComparison.OrdinalIgnoreCase) &&
+            token.Length > 4 &&
+            char.IsDigit(token[3]) &&
+            token.Contains(':'))
+        {
+            token = token[3..];
+        }
+        return token;
+    }
+
+    private async Task EnsureWebhookClearedOnceAsync(CancellationToken ct)
+    {
+        if (Interlocked.CompareExchange(ref _webhookCleared, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var url = $"{_apiBaseUrl}/bot{_botToken}/deleteWebhook?drop_pending_updates=false";
+            using var res = await _http.GetAsync(url, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                var detail = await TryReadErrorDescriptionAsync(res, ct);
+                _logger.LogWarning(
+                    "Telegram deleteWebhook respondió HTTP {StatusCode} ({Detail}).",
+                    (int)res.StatusCode,
+                    detail ?? "sin detalle");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Interlocked.Exchange(ref _webhookCleared, 0);
+            _logger.LogWarning("No se pudo ejecutar deleteWebhook en Telegram ({ErrorType}).", ex.GetType().Name);
+        }
     }
 
     public async Task<IReadOnlyList<TelegramInboundMessage>> GetUpdatesAsync(long offset, CancellationToken ct)
     {
         try
         {
-            var url = $"{_apiBaseUrl}/bot{_botToken}/getUpdates?offset={offset}&timeout=2";
+            await EnsureWebhookClearedOnceAsync(ct);
+
+            var highest = Volatile.Read(ref _highestSeenUpdateId);
+            var effectiveOffset = highest > 0 ? Math.Max(offset, highest + 1) : offset;
+            var url = $"{_apiBaseUrl}/bot{_botToken}/getUpdates?offset={effectiveOffset}&timeout=2";
             using var res = await _http.GetAsync(url, ct);
             if (!res.IsSuccessStatusCode)
             {
+                var detail = await TryReadErrorDescriptionAsync(res, ct);
                 _logger.LogWarning(
-                    "Telegram getUpdates respondió HTTP {StatusCode}.",
-                    (int)res.StatusCode);
+                    "Telegram getUpdates respondió HTTP {StatusCode} ({Detail}). Verifica TELEGRAM_BOT_TOKEN o conflictos con otro proceso.",
+                    (int)res.StatusCode,
+                    detail ?? "sin detalle");
                 return Array.Empty<TelegramInboundMessage>();
             }
 
@@ -120,6 +168,11 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
             if (resp?.Ok != true || resp.Result is null)
             {
                 return Array.Empty<TelegramInboundMessage>();
+            }
+
+            foreach (var upd in resp.Result)
+            {
+                UpdateHighestSeen(upd.UpdateId);
             }
 
             return resp.Result
@@ -132,8 +185,20 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug("Fallo temporal consultando getUpdates de Telegram ({ErrorType}).", ex.GetType().Name);
+            _logger.LogWarning("Fallo de red consultando getUpdates de Telegram ({ErrorType}).", ex.GetType().Name);
             return Array.Empty<TelegramInboundMessage>();
+        }
+    }
+
+    private void UpdateHighestSeen(long updateId)
+    {
+        long current;
+        while ((current = Volatile.Read(ref _highestSeenUpdateId)) < updateId)
+        {
+            if (Interlocked.CompareExchange(ref _highestSeenUpdateId, updateId, current) == current)
+            {
+                break;
+            }
         }
     }
 
@@ -171,22 +236,26 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
                     return true;
                 }
 
+                var retryDetail = await TryReadErrorDescriptionAsync(retryRes, ct);
                 _logger.LogWarning(
-                    "Reintento de Telegram sendMessage falló con HTTP {StatusCode} para chat_id={ChatId}.",
+                    "Reintento de Telegram sendMessage falló con HTTP {StatusCode} para chat_id={ChatId} ({Detail}).",
                     (int)retryRes.StatusCode,
-                    chatId);
+                    chatId,
+                    retryDetail ?? "sin detalle");
                 return false;
             }
 
+            var errDetail = await TryReadErrorDescriptionAsync(res, ct);
             _logger.LogWarning(
-                "Telegram sendMessage rechazado con HTTP {StatusCode} para chat_id={ChatId}.",
+                "Telegram sendMessage rechazado con HTTP {StatusCode} para chat_id={ChatId} ({Detail}).",
                 (int)res.StatusCode,
-                chatId);
+                chatId,
+                errDetail ?? "sin detalle");
             return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug("Fallo enviando mensaje a Telegram (chat_id={ChatId}, {ErrorType}).", chatId, ex.GetType().Name);
+            _logger.LogWarning("Fallo de red enviando mensaje a Telegram (chat_id={ChatId}, {ErrorType}).", chatId, ex.GetType().Name);
             return false;
         }
     }
@@ -250,24 +319,42 @@ public sealed class HttpTelegramBotTransport : ITelegramBotTransport
         }
     }
 
+    private static async Task<string?> TryReadErrorDescriptionAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var err = await response.Content.ReadFromJsonAsync<TelegramErrorEnvelope>(JsonOptions, ct);
+            return string.IsNullOrWhiteSpace(err?.Description) ? null : err.Description;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private sealed record TelegramUpdatesEnvelope(bool Ok, List<TelegramUpdateItem>? Result);
     private sealed record TelegramUpdateItem(long UpdateId, TelegramMessageItem? Message);
     private sealed record TelegramMessageItem(TelegramChatItem? Chat, string? Text);
     private sealed record TelegramChatItem(long Id);
     private sealed record TelegramGetMeEnvelope(bool Ok, TelegramBotUserItem? Result);
     private sealed record TelegramBotUserItem(long Id, bool IsBot, string? Username);
-    private sealed record TelegramErrorEnvelope(bool Ok, TelegramRetryParams? Parameters);
+    private sealed record TelegramErrorEnvelope(bool Ok, string? Description, TelegramRetryParams? Parameters);
     private sealed record TelegramRetryParams(int? RetryAfter);
 }
 
 public sealed class TelegramBotService
 {
     public const int LinkCodeExpirationMinutes = 10;
+    public const int MaxFailedLinkAttemptsPerChat = 5;
+    public static readonly TimeSpan LinkLockoutDuration = TimeSpan.FromMinutes(10);
+
+    private sealed record ChatLinkAttemptState(int FailedCount, DateTimeOffset WindowResetAt, DateTimeOffset? LockedUntil);
 
     private readonly IFamilyAccountRepository _accountRepo;
     private readonly IDeviceTelemetryRepository _deviceRepo;
     private readonly ITelegramBotTransport _transport;
     private readonly string _botUsername;
+    private readonly ConcurrentDictionary<long, ChatLinkAttemptState> _linkAttemptsByChat = new();
 
     public TelegramBotService(
         IFamilyAccountRepository accountRepo,
@@ -278,7 +365,11 @@ public sealed class TelegramBotService
         _accountRepo = accountRepo;
         _deviceRepo = deviceRepo;
         _transport = transport;
-        _botUsername = config?["TELEGRAM_BOT_USERNAME"] ?? "@CunasInteligentes_Modelado_Bot";
+        var configuredHandle = config?["TELEGRAM_BOT_USERNAME"];
+        var cleanHandle = string.IsNullOrWhiteSpace(configuredHandle)
+            ? "CunasInteligentes_Modelado_Bot"
+            : configuredHandle.Trim().TrimStart('@');
+        _botUsername = $"@{cleanHandle}";
     }
 
     public async Task<ServiceResult<TelegramLinkStatusResponse>> GetLinkStatusAsync(
@@ -382,7 +473,12 @@ public sealed class TelegramBotService
             return ServiceResult<TelegramTestMessageResponse>.Forbidden("El usuario no pertenece a una familia activa.");
         }
 
-        var link = await _accountRepo.GetTelegramLinkByUserAsync(identity.UserId, ct);
+        var familyTask = _accountRepo.GetFamilyAsync(membership.FamilyId, ct);
+        var linkTask = _accountRepo.GetTelegramLinkByUserAsync(identity.UserId, ct);
+        await Task.WhenAll(familyTask, linkTask);
+
+        var family = await familyTask;
+        var link = await linkTask;
         if (link?.ChatId is not { } chatId)
         {
             return ServiceResult<TelegramTestMessageResponse>.BadRequest(
@@ -390,7 +486,8 @@ public sealed class TelegramBotService
         }
 
         var mode = _transport is HttpTelegramBotTransport ? "telegram_http" : "inmemory";
-        var text = $"[PRUEBA] Cuna Inteligente: Verificación de notificaciones activa para familia {membership.Email} ({DateTimeOffset.UtcNow:HH:mm:ss} UTC).";
+        var familyLabel = string.IsNullOrWhiteSpace(family?.Nombre) ? "tu familia" : family.Nombre;
+        var text = $"[PRUEBA] Cuna Inteligente: Verificación de notificaciones activa para {familyLabel} ({DateTimeOffset.UtcNow:HH:mm:ss} UTC).";
         var sent = await _transport.SendMessageAsync(chatId, text, ct);
 
         await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
@@ -592,23 +689,33 @@ public sealed class TelegramBotService
                 return;
             }
 
+            var cribSnapshots = await Task.WhenAll(cribs.Select(async c =>
+            {
+                var telemetryTask = _deviceRepo.ListTelemetryForCribAsync(c.Id, ct);
+                var alertsTask = _deviceRepo.ListAlertsForCribAsync(c.Id, ct);
+                await Task.WhenAll(telemetryTask, alertsTask);
+                return (Crib: c, Telemetry: await telemetryTask, Alerts: await alertsTask);
+            }));
+
             var sb = new StringBuilder();
             sb.AppendLine("Estado actual de Cuna Inteligente (RF39):");
-            foreach (var c in cribs)
+            foreach (var snap in cribSnapshots)
             {
-                var telemetry = await _deviceRepo.ListTelemetryForCribAsync(c.Id, ct);
-                var alerts = await _deviceRepo.ListAlertsForCribAsync(c.Id, ct);
-                var latest = telemetry.LastOrDefault();
+                var c = snap.Crib;
+                var latest = CribLiveControlService.ConsolidateLatestTelemetry(snap.Telemetry);
                 var tempStr = latest?.TempC is { } t ? $"{t:F1} °C" : "S/D";
                 var humStr = latest?.Humedad is { } h ? $"{h:F1} %" : "S/D";
                 var massStr = latest?.MasaKg is { } m ? $"{m:F3} kg" : "S/D";
-                var recentAlert = alerts.LastOrDefault();
+                var bottleSuffix = latest?.TempBiberonC is not null || latest?.MasaBiberonG is not null
+                    ? $", Biberón={latest?.TempBiberonC?.ToString("F1") ?? "S/D"} °C / {latest?.MasaBiberonG?.ToString("F0") ?? "S/D"} g"
+                    : "";
+                var recentAlert = snap.Alerts.LastOrDefault();
                 var alertSuffix = recentAlert is not null
                     ? $", Última alerta={recentAlert.Mensaje ?? recentAlert.Tipo}"
                     : "";
 
                 sb.AppendLine(
-                    $"- {c.Nombre}: conexión={c.EstadoConexion}, modo={c.ModoOperacion}, T={tempStr}, H={humStr}, Masa={massStr}{alertSuffix}");
+                    $"- {c.Nombre}: conexión={c.EstadoConexion}, modo={c.ModoOperacion}, T={tempStr}, H={humStr}, Masa={massStr}{bottleSuffix}{alertSuffix}");
             }
 
             await _transport.SendMessageAsync(chatId, sb.ToString().TrimEnd(), ct);
@@ -636,6 +743,26 @@ public sealed class TelegramBotService
         DateTimeOffset now,
         CancellationToken ct)
     {
+        if (_linkAttemptsByChat.TryGetValue(chatId, out var existingState) &&
+            existingState.LockedUntil is { } lockedUntil &&
+            now < lockedUntil)
+        {
+            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
+                null,
+                null,
+                null,
+                "telegram_vinculo_bloqueado",
+                $"chat:{chatId}",
+                "limite_intentos_por_chat",
+                now), ct);
+
+            await _transport.SendMessageAsync(
+                chatId,
+                "Demasiados intentos fallidos desde este chat. Espera 10 minutos antes de intentar nuevamente.",
+                ct);
+            return;
+        }
+
         var rawCode = candidateCode.Trim();
         if (rawCode.Length < 6)
         {
@@ -651,21 +778,43 @@ public sealed class TelegramBotService
 
         if (linked is null)
         {
+            var updatedState = _linkAttemptsByChat.AddOrUpdate(
+                chatId,
+                _ => new ChatLinkAttemptState(1, now.Add(LinkLockoutDuration), null),
+                (_, prev) =>
+                {
+                    if (now >= prev.WindowResetAt)
+                    {
+                        return new ChatLinkAttemptState(1, now.Add(LinkLockoutDuration), null);
+                    }
+
+                    var nextCount = prev.FailedCount + 1;
+                    DateTimeOffset? nextLock = nextCount >= MaxFailedLinkAttemptsPerChat
+                        ? now.Add(LinkLockoutDuration)
+                        : null;
+                    return new ChatLinkAttemptState(nextCount, prev.WindowResetAt, nextLock);
+                });
+
+            var isLockedNow = updatedState.LockedUntil.HasValue && now < updatedState.LockedUntil.Value;
             await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
                 null,
                 null,
                 null,
-                "telegram_vinculo_fallido",
+                isLockedNow ? "telegram_vinculo_bloqueado" : "telegram_vinculo_fallido",
                 $"chat:{chatId}",
-                "codigo_invalido_expirado_o_usado",
+                isLockedNow ? "limite_intentos_por_chat" : "codigo_invalido_expirado_o_usado",
                 now), ct);
 
             await _transport.SendMessageAsync(
                 chatId,
-                "Código de vinculación inválido, expirado o bloqueado tras superar el límite de intentos.",
+                isLockedNow
+                    ? "Demasiados intentos fallidos desde este chat. Espera 10 minutos antes de intentar nuevamente."
+                    : "Código de vinculación inválido, expirado o bloqueado tras superar el límite de intentos.",
                 ct);
             return;
         }
+
+        _linkAttemptsByChat.TryRemove(chatId, out _);
 
         var membership = await _accountRepo.GetUserMembershipAsync(linked.UsuarioId, ct);
         await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
@@ -791,8 +940,22 @@ public sealed class TelegramPollingAndRemindersBackgroundService : BackgroundSer
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
-        while (!stoppingToken.IsCancellationRequested && await timer.WaitForNextTickAsync(stoppingToken))
+        var isHttp = _transport is HttpTelegramBotTransport;
+        if (isHttp)
+        {
+            var probe = await _transport.ProbeBotAsync(stoppingToken);
+            if (probe.Reachable && !string.IsNullOrWhiteSpace(probe.ResolvedUsername))
+            {
+                _logger.LogInformation("Sondeo Telegram conectado como @{Username}.", probe.ResolvedUsername);
+            }
+            else if (!probe.Reachable)
+            {
+                _logger.LogWarning("Sondeo Telegram no pudo verificar getMe: {Detail}", probe.Detail);
+            }
+        }
+
+        var pollDelay = isHttp ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(5);
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
@@ -816,7 +979,16 @@ public sealed class TelegramPollingAndRemindersBackgroundService : BackgroundSer
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Error en ciclo de sondeo de Telegram / recordatorios RF18.");
+                _logger.LogWarning(ex, "Error en ciclo de sondeo de Telegram / recordatorios RF18.");
+            }
+
+            try
+            {
+                await Task.Delay(pollDelay, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
             }
         }
     }

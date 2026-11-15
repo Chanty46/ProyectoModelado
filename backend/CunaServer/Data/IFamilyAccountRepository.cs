@@ -427,10 +427,6 @@ public sealed class InMemoryFamilyAccountRepository : IFamilyAccountRepository
 
             if (match is null)
             {
-                foreach (var item in pending)
-                {
-                    _telegramLinks[item.UsuarioId] = item with { Intentos = Math.Min(5, item.Intentos + 1) };
-                }
                 return Task.FromResult<TelegramLinkRecord?>(null);
             }
 
@@ -851,7 +847,7 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
     public async Task<IReadOnlyList<SecurityAuditEntry>> ListSecurityEventsAsync(Guid familyId, CancellationToken ct)
     {
         var rows = await _http.GetFromJsonAsync<List<SecurityAuditDto>>(
-            $"bitacora_seguridad?family_id=eq.{familyId}&select=family_id,usuario_id,dispositivo_id,evento,ip_origen,ts&order=ts.desc&limit=50",
+            $"bitacora_seguridad?family_id=eq.{familyId}&select=family_id,usuario_id,dispositivo_id,evento,ip_origen,detalle,ts&order=ts.desc&limit=50",
             JsonOptions,
             ct) ?? [];
         return rows.Select(r => new SecurityAuditEntry(
@@ -860,8 +856,24 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
             r.DispositivoId,
             r.Evento,
             r.IpOrigen,
-            null,
+            ExtractSecurityDetail(r.Detalle),
             r.Ts)).ToList();
+    }
+
+    private static string? ExtractSecurityDetail(JsonElement? detalle)
+    {
+        if (!detalle.HasValue || detalle.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+        if (detalle.Value.ValueKind == JsonValueKind.Object &&
+            detalle.Value.TryGetProperty("info", out var infoProp))
+        {
+            return infoProp.ValueKind == JsonValueKind.String ? infoProp.GetString() : infoProp.GetRawText();
+        }
+        return detalle.Value.ValueKind == JsonValueKind.String
+            ? detalle.Value.GetString()
+            : detalle.Value.GetRawText();
     }
 
     public async Task<TelegramLinkRecord?> GetTelegramLinkByUserAsync(Guid userId, CancellationToken ct)
@@ -942,12 +954,6 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
 
         if (match is null)
         {
-            foreach (var r in activeRows)
-            {
-                using var incReq = new HttpRequestMessage(HttpMethod.Patch, $"telegram_vinculos?id=eq.{r.Id}");
-                incReq.Content = JsonContent.Create(new { intentos = Math.Min(5, r.Intentos + 1) }, options: JsonOptions);
-                using var incRes = await _http.SendAsync(incReq, ct);
-            }
             return null;
         }
 
@@ -1109,6 +1115,7 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
         Guid? DispositivoId,
         string Evento,
         string? IpOrigen,
+        JsonElement? Detalle,
         DateTimeOffset Ts);
 
     private sealed record TelegramChatIdDto(long? ChatId);

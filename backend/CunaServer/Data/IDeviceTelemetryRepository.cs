@@ -384,7 +384,7 @@ public sealed class InMemoryDeviceTelemetryRepository : IDeviceTelemetryReposito
             return Task.FromResult<IReadOnlyList<TelemetryRecord>>(Array.Empty<TelemetryRecord>());
         }
 
-        var list = queue.OrderBy(t => t.Seq).ToList();
+        var list = queue.OrderBy(t => t.Ts).ThenBy(t => t.Seq).ToList();
         return Task.FromResult<IReadOnlyList<TelemetryRecord>>(list);
     }
 
@@ -1152,11 +1152,12 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
     public async Task<IReadOnlyList<TelemetryRecord>> ListTelemetryForCribAsync(Guid cunaId, CancellationToken ct)
     {
         var rows = await _http.GetFromJsonAsync<List<TelemetryDto>>(
-            $"telemetria?cuna_id=eq.{cunaId}&order=seq.desc&limit=200",
+            $"telemetria?cuna_id=eq.{cunaId}&order=ts.desc&limit=200",
             JsonOptions,
             ct) ?? [];
         return rows
-            .OrderBy(r => r.Seq ?? 0)
+            .OrderBy(r => r.Ts)
+            .ThenBy(r => r.Seq ?? 0)
             .Select(r => new TelemetryRecord(
                 r.CunaId, r.DispositivoId ?? Guid.Empty, r.Ts, r.MasaKg, r.IndiceMovimiento,
                 r.TempC, r.Humedad, r.MasaBiberonG, r.TempBiberonC, r.BateriaPct, r.Seq ?? 0))
@@ -1172,7 +1173,7 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
         return rows
             .OrderBy(r => r.Ts)
             .Select(r => new EventAlertRecord(
-                r.Id, r.CunaId, r.DispositivoId ?? Guid.Empty, r.Tipo, r.Severidad, r.Mensaje, null, r.Ts))
+                r.Id, r.CunaId, r.DispositivoId ?? Guid.Empty, r.Tipo, r.Severidad, r.Mensaje, r.Datos?.GetRawText(), r.Ts))
             .ToList();
     }
 
@@ -1545,7 +1546,17 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
         using var res = await _http.SendAsync(req, ct);
         res.EnsureSuccessStatusCode();
         var rows = await res.Content.ReadFromJsonAsync<List<CribDto>>(JsonOptions, ct);
-        return rows?.FirstOrDefault()?.ToModel();
+        var updated = rows?.FirstOrDefault()?.ToModel();
+
+        if (updated is not null && estadoConexion == "desconectada")
+        {
+            using var devReq = new HttpRequestMessage(HttpMethod.Patch, $"dispositivos?cuna_id=eq.{cunaId}");
+            devReq.Content = JsonContent.Create(new { estado = "desconectado" }, options: JsonOptions);
+            using var devRes = await _http.SendAsync(devReq, ct);
+            devRes.EnsureSuccessStatusCode();
+        }
+
+        return updated;
     }
 
     public async Task<IReadOnlyList<CribRecord>> ListAllCribsAsync(CancellationToken ct)
@@ -1755,6 +1766,7 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
         string Tipo,
         string Severidad,
         string? Mensaje,
+        JsonElement? Datos,
         DateTimeOffset Ts);
 
     private sealed record ToyUsageDto(

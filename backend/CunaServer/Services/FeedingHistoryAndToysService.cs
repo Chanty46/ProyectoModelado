@@ -347,8 +347,12 @@ public sealed class FeedingHistoryAndToysService
             return ServiceResult<ExportHistoryResponse>.BadRequest("El formato de exportación debe ser 'csv' o 'pdf' (RF32).");
         }
 
-        var sleepAll = await _deviceRepo.ListSleepSessionsByBabyAsync(bebeId, ct);
-        var feedingAll = await _deviceRepo.ListFeedingSessionsByBabyAsync(bebeId, ct);
+        var sleepTask = _deviceRepo.ListSleepSessionsByBabyAsync(bebeId, ct);
+        var feedingTask = _deviceRepo.ListFeedingSessionsByBabyAsync(bebeId, ct);
+        await Task.WhenAll(sleepTask, feedingTask);
+
+        var sleepAll = await sleepTask;
+        var feedingAll = await feedingTask;
 
         var sleepFiltered = FilterByDateRange(sleepAll, s => s.Inicio, request.Desde, request.Hasta);
         var feedingFiltered = FilterByDateRange(feedingAll, f => f.Inicio, request.Desde, request.Hasta);
@@ -564,9 +568,14 @@ public sealed class FeedingHistoryAndToysService
             return ServiceResult<ToysAndPeripheralsStatusResponse>.Forbidden(forbidden);
         }
 
-        var usage = await _deviceRepo.ListToyUsageForCribAsync(cunaId, ct);
-        var devices = await _deviceRepo.ListDevicesByCribAsync(cunaId, ct);
-        var telemetry = await _deviceRepo.ListTelemetryForCribAsync(cunaId, ct);
+        var usageTask = _deviceRepo.ListToyUsageForCribAsync(cunaId, ct);
+        var devicesTask = _deviceRepo.ListDevicesByCribAsync(cunaId, ct);
+        var telemetryTask = _deviceRepo.ListTelemetryForCribAsync(cunaId, ct);
+        await Task.WhenAll(usageTask, devicesTask, telemetryTask);
+
+        var usage = await usageTask;
+        var devices = await devicesTask;
+        var telemetry = await telemetryTask;
 
         var toyDev = devices.FirstOrDefault(d => d.Tipo == DeviceTypes.Juguete);
         var bottleDev = devices.FirstOrDefault(d => d.Tipo == DeviceTypes.Biberon);
@@ -637,58 +646,137 @@ public sealed class FeedingHistoryAndToysService
         IReadOnlyList<SleepSessionRecord> sleepSessions,
         IReadOnlyList<FeedingSessionRecord> feedingSessions)
     {
-        var lines = new List<string>
+        const int maxPdfCharsPerLine = 92;
+        var allBodyLines = new List<string>();
+        foreach (var f in feedingSessions)
         {
-            $"Reporte Historico Cuna Inteligente (RF32) - Bebe: {EscapePdfText(baby.Nombre)}",
-            $"Fecha de nacimiento: {baby.FechaNacimiento:yyyy-MM-dd} | Generado: {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm} UTC",
-            $"Sesiones de sueno: {sleepSessions.Count} | Sesiones de alimentacion: {feedingSessions.Count}",
-            "------------------------------------------------------------------------"
-        };
-
-        foreach (var f in feedingSessions.Take(15))
-        {
-            lines.Add(string.Create(
+            var alertaStr = f.AlertaTemperatura ? " [ALERTA TEMP]" : "";
+            var rawLine = string.Create(
                 CultureInfo.InvariantCulture,
-                $"[Toma] {f.Inicio:yyyy-MM-dd HH:mm} | Inicial: {f.MasaInicialG:F1}g | Final: {f.MasaFinalG ?? 0:F1}g | Vol: {f.MlConsumidos ?? 0:F1} ml | T: {f.TempC ?? 0:F1} C"));
+                $"[Toma] {f.Inicio:yyyy-MM-dd HH:mm} | Inicial: {f.MasaInicialG:F1}g | Final: {f.MasaFinalG ?? 0:F1}g | Vol: {f.MlConsumidos ?? 0:F1} ml | T: {f.TempC ?? 0:F1} °C{alertaStr}");
+            allBodyLines.AddRange(WrapPdfLine(EscapePdfText(rawLine), maxPdfCharsPerLine));
         }
 
-        foreach (var s in sleepSessions.Take(15))
+        foreach (var s in sleepSessions)
         {
-            lines.Add(string.Create(
+            var rawLine = string.Create(
                 CultureInfo.InvariantCulture,
-                $"[Sueno {s.Tipo}] {s.Inicio:yyyy-MM-dd HH:mm} | Mov prom: {s.MovimientoPromedio ?? 0:F3} kg/m | Interrupciones: {s.Interrupciones}"));
+                $"[Sueño {s.Tipo}] {s.Inicio:yyyy-MM-dd HH:mm} | Mov prom: {s.MovimientoPromedio ?? 0:F3} kg/m | Interrupciones: {s.Interrupciones}");
+            allBodyLines.AddRange(WrapPdfLine(EscapePdfText(rawLine), maxPdfCharsPerLine));
         }
 
-        var contentBuilder = new StringBuilder();
-        contentBuilder.AppendLine("BT");
-        contentBuilder.AppendLine("/F1 10 Tf");
-        var y = 760;
-        foreach (var line in lines)
+        if (allBodyLines.Count == 0)
         {
-            contentBuilder.AppendLine($"50 {y} Td ({line}) Tj");
-            contentBuilder.AppendLine($"-50 -{y} Td");
-            y -= 16;
-            if (y < 60)
+            allBodyLines.Add("Sin sesiones registradas para este perfil.");
+        }
+
+        var generatedAt = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        var babyNameEscaped = EscapePdfText(baby.Nombre);
+        var headerLineCountEstimate =
+            ($"Reporte Histórico Cuna Inteligente (RF32) - Bebé: {babyNameEscaped} (Pág. 999/999)".Length <= maxPdfCharsPerLine
+                ? 1
+                : 1 + WrapPdfLine($"Bebé: {babyNameEscaped}", maxPdfCharsPerLine).Count) + 3;
+        var linesPerPage = Math.Max(20, Math.Min(38, (760 - (headerLineCountEstimate * 16) - 8 - 50) / 16));
+
+        var pageChunks = new List<List<string>>();
+        for (var i = 0; i < allBodyLines.Count; i += linesPerPage)
+        {
+            pageChunks.Add(allBodyLines.GetRange(i, Math.Min(linesPerPage, allBodyLines.Count - i)));
+        }
+
+        var totalPages = pageChunks.Count;
+
+        // Objetos PDF: 1=Catalog, 2=Pages, 3=Font Helvetica, luego por página p: Page(4+p*2) y Contents(5+p*2)
+        var pageObjIds = new int[totalPages];
+        var contentStreams = new byte[totalPages][];
+        for (var p = 0; p < totalPages; p++)
+        {
+            pageObjIds[p] = 4 + (p * 2);
+            var cb = new StringBuilder();
+            cb.Append("BT\n/F1 10 Tf\n");
+
+            var y = 760;
+            var headerLines = new List<string>();
+            var fullTitle = $"Reporte Histórico Cuna Inteligente (RF32) - Bebé: {babyNameEscaped} (Pág. {p + 1}/{totalPages})";
+            if (fullTitle.Length <= maxPdfCharsPerLine)
             {
-                break;
+                headerLines.Add(fullTitle);
             }
+            else
+            {
+                headerLines.Add($"Reporte Histórico Cuna Inteligente (RF32) - Pág. {p + 1}/{totalPages}");
+                headerLines.AddRange(WrapPdfLine($"Bebé: {babyNameEscaped}", maxPdfCharsPerLine));
+            }
+            headerLines.Add(EscapePdfText($"Fecha de nacimiento: {baby.FechaNacimiento:yyyy-MM-dd} | Generado: {generatedAt} UTC"));
+            headerLines.Add(EscapePdfText($"Sesiones de sueño: {sleepSessions.Count} | Sesiones de alimentación: {feedingSessions.Count}"));
+            headerLines.Add("------------------------------------------------------------------------");
+
+            foreach (var h in headerLines)
+            {
+                cb.Append($"1 0 0 1 50 {y} Tm ({h}) Tj\n");
+                y -= 16;
+            }
+
+            // Separación vertical adicional tras el encabezado antes de la primera fila de datos
+            y -= 8;
+
+            foreach (var row in pageChunks[p])
+            {
+                cb.Append($"1 0 0 1 50 {y} Tm ({row}) Tj\n");
+                y -= 16;
+            }
+
+            cb.Append("ET\n");
+            contentStreams[p] = Encoding.Latin1.GetBytes(cb.ToString());
         }
-        contentBuilder.AppendLine("ET");
-        var streamContent = contentBuilder.ToString();
 
-        var pdf = new StringBuilder();
-        pdf.AppendLine("%PDF-1.4");
-        pdf.AppendLine("1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj");
-        pdf.AppendLine("2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj");
-        pdf.AppendLine("3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj");
-        pdf.AppendLine($"4 0 obj << /Length {Encoding.ASCII.GetByteCount(streamContent)} >> stream");
-        pdf.Append(streamContent);
-        pdf.AppendLine("endstream endobj");
-        pdf.AppendLine("5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj");
-        pdf.AppendLine("trailer << /Root 1 0 R >>");
-        pdf.AppendLine("%%EOF");
+        var totalObjects = 3 + (totalPages * 2);
+        var offsets = new long[totalObjects + 1];
 
-        return Encoding.ASCII.GetBytes(pdf.ToString());
+        using var ms = new MemoryStream();
+        void WriteAscii(string text)
+        {
+            var bytes = Encoding.Latin1.GetBytes(text);
+            ms.Write(bytes, 0, bytes.Length);
+        }
+
+        WriteAscii("%PDF-1.4\n");
+
+        offsets[1] = ms.Position;
+        WriteAscii("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        offsets[2] = ms.Position;
+        var kidsList = string.Join(" ", pageObjIds.Select(id => $"{id} 0 R"));
+        WriteAscii($"2 0 obj\n<< /Type /Pages /Kids [{kidsList}] /Count {totalPages} >>\nendobj\n");
+
+        offsets[3] = ms.Position;
+        WriteAscii("3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n");
+
+        for (var p = 0; p < totalPages; p++)
+        {
+            var pageId = 4 + (p * 2);
+            var contentId = 5 + (p * 2);
+
+            offsets[pageId] = ms.Position;
+            WriteAscii(
+                $"{pageId} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {contentId} 0 R /Resources << /Font << /F1 3 0 R >> >> >>\nendobj\n");
+
+            offsets[contentId] = ms.Position;
+            WriteAscii($"{contentId} 0 obj\n<< /Length {contentStreams[p].Length} >>\nstream\n");
+            ms.Write(contentStreams[p], 0, contentStreams[p].Length);
+            WriteAscii("endstream\nendobj\n");
+        }
+
+        var xrefOffset = ms.Position;
+        WriteAscii($"xref\n0 {totalObjects + 1}\n");
+        WriteAscii("0000000000 65535 f \n");
+        for (var objId = 1; objId <= totalObjects; objId++)
+        {
+            WriteAscii($"{offsets[objId]:D10} 00000 n \n");
+        }
+
+        WriteAscii($"trailer\n<< /Size {totalObjects + 1} /Root 1 0 R >>\nstartxref\n{xrefOffset}\n%%EOF\n");
+        return ms.ToArray();
     }
 
     private static string EscapeCsv(string input)
@@ -708,7 +796,81 @@ public sealed class FeedingHistoryAndToysService
     }
 
     private static string EscapePdfText(string input)
-        => input.Replace("(", "[").Replace(")", "]").Replace("\\", "/");
+    {
+        if (string.IsNullOrEmpty(input))
+        {
+            return string.Empty;
+        }
+
+        var sb = new StringBuilder(input.Length);
+        foreach (var ch in input)
+        {
+            switch (ch)
+            {
+                case '(':
+                    sb.Append('[');
+                    break;
+                case ')':
+                    sb.Append(']');
+                    break;
+                case '\\':
+                    sb.Append('/');
+                    break;
+                case '\r':
+                case '\n':
+                case '\t':
+                    sb.Append(' ');
+                    break;
+                default:
+                    if (ch >= 0x20 && ch <= 0xFF)
+                    {
+                        sb.Append(ch);
+                    }
+                    else if (ch > 0xFF)
+                    {
+                        sb.Append('?');
+                    }
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static IReadOnlyList<string> WrapPdfLine(string escapedText, int maxChars)
+    {
+        if (string.IsNullOrEmpty(escapedText) || escapedText.Length <= maxChars)
+        {
+            return new[] { escapedText };
+        }
+
+        var lines = new List<string>();
+        var remaining = escapedText.AsSpan();
+        var isFirst = true;
+
+        while (remaining.Length > 0)
+        {
+            var prefix = isFirst ? string.Empty : "  ";
+            var limit = Math.Max(16, maxChars - prefix.Length);
+            if (remaining.Length <= limit)
+            {
+                lines.Add(prefix + remaining.ToString());
+                break;
+            }
+
+            var slice = remaining[..limit];
+            var breakIdx = slice.LastIndexOf(' ');
+            if (breakIdx < limit / 3)
+            {
+                breakIdx = limit;
+            }
+
+            lines.Add(prefix + remaining[..breakIdx].TrimEnd().ToString());
+            remaining = remaining[breakIdx..].TrimStart();
+            isFirst = false;
+        }
+
+        return lines;
+    }
 
     private static string SanitizeFileName(string input)
     {
