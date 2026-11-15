@@ -161,19 +161,19 @@ SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES (HITO M11)
 ===================================================================================
 1. Backend C# (.NET 8 LTS — xUnit):
    - Archivo de solución: backend/CunaServer.sln
-   - Pruebas ejecutadas: 49 pruebas
-   - Estado: 49 PASADAS / 0 FALLIDAS (Duración: 1 s)
+   - Pruebas ejecutadas: 53 pruebas
+   - Estado: 53 PASADAS / 0 FALLIDAS (Duración: 2.5 s)
    - Cobertura: Cuentas familiares, RLS, contratos HTTP PostgREST con mock
      (PostgrestFamilyAccountRepository y PostgrestDeviceTelemetryRepository),
      TCP framing (ArrayPool TcpLineReader), máquina de estados, consolidación
      multi-dispositivo, watchdog, bot de Telegram HTTP + deep-link /start + 429 retry,
      spikes de audio, cálculo de ml, CSV sanitization, PDF WinAnsiEncoding + envoltura
-     de líneas <= 92 columnas y checklist E2E.
+     por ancho en puntos Helvetica <= 500 pt / 92 columnas y checklist E2E.
 
 2. Simuladores TCP (Python 3 — unittest):
    - Módulo: simulators/test_simulators.py
    - Pruebas ejecutadas: 10 pruebas
-   - Estado: 10 PASADAS / 0 FALLIDAS (Duración: 0.028 s)
+   - Estado: 10 PASADAS / 0 FALLIDAS (Duración: 0.036 s)
    - Cobertura: Detección de retiro <= 1 s, filtro de ruido 5 Hz O(1), rampa de luz PWM,
      decodificación PCM de audio, rechazo de tramas > 4 KB, estrés 10000 ticks,
      backoff <= 30 s y manejo de comandos intercalados antes del ack.
@@ -181,7 +181,7 @@ SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES (HITO M11)
 3. Firmware MicroPython (RP2040 — unittest):
    - Módulo: firmware/test_firmware.py
    - Pruebas ejecutadas: 7 pruebas
-   - Estado: 7 PASADAS / 0 FALLIDAS (Duración: 0.009 s)
+   - Estado: 7 PASADAS / 0 FALLIDAS (Duración: 0.010 s)
    - Cobertura: Asignación de pines RP2040 (GPIO 0-28), búfer circular de 48 h (2880 reg),
      máquina de estados de los 5 nodos, compatibilidad de notas SQL/memoria y vaciado TCP.
 
@@ -196,16 +196,16 @@ SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES (HITO M11)
 6. Auditoría de Seguridad (verify_environment.py):
    - Escaneo de secretos reales (sb_secret, tokens, contraseñas): 0 COINCIDENCIAS
 ===================================================================================
-TOTAL: 75 pruebas automáticas + verificación HTTP Bot API mock con 100 % de éxito.
+TOTAL: 79 pruebas automáticas + verificación HTTP Bot API mock con 100 % de éxito.
 ===================================================================================
 ```
 
 ### 4.1 Métricas de Rendimiento y Refinamiento Técnico (Hito M11)
-- **Parser TCP (`TcpLineReader` con `ArrayPool<byte>`)**: `10 000` líneas procesadas en `3.56 ms` (`2 808 358 líneas/s`).
-- **Validación JWT ES256 con caché JWKS (`CachedJwksSnapshot`)**: `2 000` verificaciones en `103.56 ms` (`19 312 ops/s`).
-- **Latencia de consulta en vivo (`GET /api/cribs/{id}/live`)**: `50` consultas en `32.45 ms` (promedio `0.65 ms/req`).
-- **Exportación RF32 (CSV + PDF, 120 registros)**: `21.85 ms` (presupuesto `< 10 000 ms`); PDF multipágina verificado con `pdfinfo`/`pdftotext` (612x792 pts, máx. 85 columnas por línea).
-- **Higiene, UI y robustez**: helper unificado de autorización familiar y endpoints, límite en colas de telemetría/alertas/auditoría en memoria, eliminación de consultas N+1 hacia PostgREST de Telegram, prevención de sobrescritura de sliders al editar en frontend, soporte real de micrófono Web Audio API en el intercomunicador, corrección de autocierre del formulario de umbrales (`showThresholdsFormRef`), parseo estricto de entradas numéricas opcionales (`parseOptionalFiniteNumber` evitando alertas falsas `0.0 °C`), escape y ajuste de márgenes en PDF RF32, y pruebas unitarias HTTP de los repositorios PostgREST.
+- **Parser TCP (`TcpLineReader` con `ArrayPool<byte>`)**: `10 000` líneas procesadas en `4.90 ms` (`2 042 692 líneas/s`).
+- **Validación JWT ES256 con caché JWKS (`CachedJwksSnapshot`)**: `2 000` verificaciones en `100.02 ms` (`19 995 ops/s`).
+- **Latencia de consulta en vivo (`GET /api/cribs/{id}/live`)**: `50` consultas en `34.38 ms` (promedio `0.69 ms/req`).
+- **Exportación RF32 (CSV + PDF, 120 registros)**: `27.09 ms` (presupuesto `< 10 000 ms`); PDF multipágina verificado con `pdfinfo`/`pdftotext`/`pdftoppm` (Letter 612x792 pts, envoltura proporcional Helvetica <= 500 pt / <= 92 columnas, margen inferior >= 50 pt).
+- **Higiene, UI y robustez**: helper unificado de autorización familiar y endpoints, límite en colas de telemetría/alertas/auditoría en memoria, eliminación de consultas N+1 hacia PostgREST de Telegram, prevención de sobrescritura de sliders al editar en frontend, soporte real de micrófono Web Audio API en el intercomunicador, corrección de autocierre del formulario de umbrales (`showThresholdsFormRef`), parseo estricto de entradas numéricas opcionales (`parseOptionalFiniteNumber` evitando alertas falsas `0.0 °C`), ajuste de anchura en puntos y cota de encabezados en PDF RF32 (sin falsos `0.0 °C` en tomas abiertas), disposición determinista de `JsonDocument` en auditoría PostgREST y filtro explícito `family_id` en lectura de umbrales.
 
 ---
 

@@ -998,7 +998,7 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
     public async Task<CribConfig> GetCribConfigAsync(Guid cunaId, Guid familyId, CancellationToken ct)
     {
         var cunas = await _http.GetFromJsonAsync<List<CunaOwnerDto>>(
-            $"cunas?id=eq.{cunaId}&select=id,family_id,escala_masa&limit=1",
+            $"cunas?id=eq.{cunaId}&family_id=eq.{familyId}&select=id,family_id,escala_masa&limit=1",
             JsonOptions,
             ct);
         var escalaMasa = cunas?.FirstOrDefault()?.EscalaMasa ?? 0.20m;
@@ -1570,13 +1570,14 @@ public sealed class PostgrestDeviceTelemetryRepository : IDeviceTelemetryReposit
 
     public async Task LogCaregiverActionAsync(CaregiverAuditLogEntry entry, CancellationToken ct)
     {
+        using var detalleDoc = entry.DetalleJson is not null ? JsonDocument.Parse(entry.DetalleJson) : null;
         var payload = new
         {
             family_id = entry.FamilyId,
             usuario_id = entry.UsuarioId,
             perfil_id = entry.PerfilId,
             accion = entry.Accion,
-            detalle = entry.DetalleJson is not null ? JsonDocument.Parse(entry.DetalleJson).RootElement : (JsonElement?)null,
+            detalle = detalleDoc is not null ? detalleDoc.RootElement : (JsonElement?)null,
             ts = entry.Ts
         };
         using var res = await _http.PostAsJsonAsync("bitacora", payload, JsonOptions, ct);

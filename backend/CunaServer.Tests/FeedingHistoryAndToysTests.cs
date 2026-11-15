@@ -400,6 +400,67 @@ public class FeedingHistoryAndToysTests
         Assert.Equal(24, separatorY.Value - firstBodyAfterSeparatorY.Value);
     }
 
+    [Fact]
+    public async Task RF32_PdfExport_WrapsWideUppercaseAndOpenFeedingSessionWithinPageWidth()
+    {
+        await using var factory = CreateTestFactory(out _, out _, out _);
+        using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        var bootResp = await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia Anchura", "Mamá", "M1"));
+        var bootCtx = await bootResp.Content.ReadFromJsonAsync<AccountContextResponse>();
+        var profileId = bootCtx!.Perfiles[0].Id;
+
+        await client.PostAsync("/api/pairing/window", null);
+        var claimResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-central-nuevo",
+            "RECLAMO-CENTRAL-1001",
+            null,
+            "Cuna Principal"));
+        var claimed = await claimResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+
+        // 59 caracteres con mayúsculas anchas ('W') y tildes/eñes dentro del límite RF28 (<=60)
+        var wideBabyName = new string('W', 51) + " ÁÉÍÓÚÑ°";
+        var babyResp = await client.PostAsJsonAsync("/api/babies", new UpsertBabyRequest(
+            claimed!.CunaId,
+            wideBabyName,
+            new DateOnly(2026, 2, 1),
+            null));
+        Assert.Equal(HttpStatusCode.Created, babyResp.StatusCode);
+        var baby = await babyResp.Content.ReadFromJsonAsync<BabyRecord>();
+
+        // Toma abierta sin temperatura ni masa final (debe exportar N/D y no 0.0 °C)
+        var startOpenResp = await client.PostAsJsonAsync("/api/feeding/sessions/start", new StartFeedingSessionRequest(
+            baby!.Id,
+            180.0m,
+            null,
+            profileId));
+        Assert.Equal(HttpStatusCode.Created, startOpenResp.StatusCode);
+
+        var exportResp = await client.PostAsJsonAsync($"/api/babies/{baby.Id}/history/export", new ExportHistoryRequest("pdf", null, null, profileId));
+        Assert.Equal(HttpStatusCode.OK, exportResp.StatusCode);
+        var export = await exportResp.Content.ReadFromJsonAsync<ExportHistoryResponse>();
+        var pdfBytes = Convert.FromBase64String(export!.ContentBase64);
+        var pdfLatin1 = Encoding.Latin1.GetString(pdfBytes);
+
+        Assert.Contains("Final: N/D | Vol: N/D | T: N/D", pdfLatin1);
+        Assert.Contains("ÁÉÍÓÚÑ°", pdfLatin1);
+
+        var textCmdMatches = Regex.Matches(pdfLatin1, @"^1 0 0 1 50 (\d+) Tm \((.+)\) Tj$", RegexOptions.Multiline);
+        Assert.NotEmpty(textCmdMatches);
+        foreach (Match match in textCmdMatches)
+        {
+            var y = int.Parse(match.Groups[1].Value);
+            var lineText = match.Groups[2].Value;
+            Assert.True(y >= 50, $"Coordenada Y={y} invade el margen inferior para línea: {lineText}");
+            Assert.True(lineText.Length <= 92, $"Línea PDF excede 92 caracteres ({lineText.Length}): {lineText}");
+            // Estimación conservadora de ancho máximo: ninguna línea de 51 'W's queda sin envolver
+            Assert.True(
+                !lineText.Contains(new string('W', 51), StringComparison.Ordinal),
+                $"Línea con 51 'W' consecutivas excedería la caja útil de 512pt en Letter 612pt: {lineText}");
+        }
+    }
+
     private sealed class FakeM7JwtValidator : IJwtTokenValidator
     {
         public Task<AuthenticatedIdentity?> ValidateBearerTokenAsync(string? authorizationHeader, CancellationToken ct)

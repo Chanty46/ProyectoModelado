@@ -277,9 +277,9 @@
       font-size: 0.84em;
     }
     th code, .panel-dark code, .topbar code {
-      background: rgba(255, 255, 255, 0.14);
-      color: #5eead4;
-      border: 1px solid rgba(94, 234, 212, 0.28);
+      background: rgba(45, 212, 191, 0.16);
+      color: #99f6e4;
+      border: 1px solid rgba(94, 234, 212, 0.38);
     }
     .nowrap-code { white-space: nowrap; display: inline-block; margin-top: 2px; }
     .codebox code { background: transparent; color: inherit; padding: 0; border: 0; }
@@ -532,7 +532,7 @@
       <div class="grid-2-eq">
         <div class="panel">
           <h3>Paso 0 &middot; Auditoría Previa (1 comando)</h3>
-          <p>Comprueba ausencia de secretos filtrados, 49 tests .NET, 10 simuladores, 7 firmware, 9 frontend + build Vite y roundtrip Telegram mock.</p>
+          <p>Comprueba ausencia de secretos filtrados, 53 tests .NET, 10 simuladores, 7 firmware, 9 frontend + build Vite y roundtrip Telegram mock.</p>
           <pre class="codebox"><code><span class="code-hl">python3 scripts/verify_environment.py</span></code></pre>
           <h3 style="margin-top:14px;">Terminal 1 &middot; Backend REST + TCP (:5080 / :9000)</h3>
           <p>Validar salud en <code>http://localhost:5080/health</code> (&rarr; <code>status: "ok", tcpPort: 9000</code>).</p>
@@ -554,7 +554,7 @@ python3 simulators/run_simulators.py --device all --once</code></pre>
         <svg class="svg-box" viewBox="0 0 920 82" role="img" aria-label="Flujo de validación tras arranque">
           <rect x="6" y="10" width="204" height="62" rx="12" fill="#0f172a"/>
           <text x="108" y="37" text-anchor="middle" font-size="13" font-weight="700" fill="#2dd4bf">1. verify_environment.py</text>
-          <text x="108" y="57" text-anchor="middle" font-size="11" fill="#cbd5e1">0 secretos &amp; 75 pruebas OK</text>
+          <text x="108" y="57" text-anchor="middle" font-size="11" fill="#cbd5e1">0 secretos &amp; 79 pruebas OK</text>
           <path d="M214 41 h16" stroke="#0d9488" stroke-width="3"/>
           <polygon points="228,35 239,41 228,47" fill="#0d9488"/>
           <rect x="242" y="10" width="204" height="62" rx="12" fill="#0f172a"/>
@@ -783,10 +783,10 @@ python3 simulators/run_simulators.py --device all --once</code></pre>
     <!-- DIAPOSITIVA 7 -->
     <section class="slide" aria-label="Pruebas físicas TODO-HW y suite automatizada">
       <span class="kicker">7. Pruebas Automatizadas y Calibración Física (TODO-HW)</span>
-      <h2>Validación de Software (75 Pruebas + Mock) + Pendientes de Banco Físico</h2>
+      <h2>Validación de Software (79 Pruebas + Mock) + Pendientes de Banco Físico</h2>
       <p class="lead">Toda la lógica de backend, protocolo, repositorios PostgREST, UI y firmware está probada en repositorio; la puesta a punto final sobre protoboard se resume en 5 puntos verificables.</p>
       <div class="metric-strip">
-        <div class="metric"><div class="metric-val">49 / 49</div><div class="metric-lbl">Backend C# xUnit<br />TCP ACK, PostgREST HTTP, RLS, PDF/CSV</div></div>
+        <div class="metric"><div class="metric-val">53 / 53</div><div class="metric-lbl">Backend C# xUnit<br />TCP ACK, PostgREST HTTP, RLS, PDF/CSV</div></div>
         <div class="metric"><div class="metric-val">10 / 10</div><div class="metric-lbl">Simuladores Python<br />Filtro 5 Hz, 10k ticks, seq sync</div></div>
         <div class="metric"><div class="metric-val">7 / 7</div><div class="metric-lbl">Firmware MicroPython<br />Pines RP2040, búfer 48 h</div></div>
         <div class="metric"><div class="metric-val">9 / 9</div><div class="metric-lbl">Frontend React + Build<br />Helpers, tsc 0 errores, Vite</div></div>
@@ -876,7 +876,7 @@ python3 simulators/run_simulators.py --device all --once</code></pre>
         </tbody>
       </table>
       <div class="panel-dark" style="margin-top:16px;">
-        <strong style="color:#2dd4bf;">Recordatorio Final del Operador:</strong> Nunca ejecutar <code>git push</code> directo a <code>main</code>, nunca mostrar <code>.env</code> en pantalla compartida y ejecutar <code>python3 scripts/verify_environment.py</code> tras cualquier cambio antes de demostrar.
+        <strong style="color:#2dd4bf;">Recordatorio Final del Operador:</strong> Nunca ejecutar <code class="nowrap-code">git push</code> directo a <code class="nowrap-code">main</code>, nunca mostrar <code class="nowrap-code">.env</code> en pantalla compartida y ejecutar <code class="nowrap-code">python3 scripts/verify_environment.py</code> tras cualquier cambio antes de demostrar.
       </div>
     </section>
 

@@ -647,22 +647,37 @@ public sealed class FeedingHistoryAndToysService
         IReadOnlyList<FeedingSessionRecord> feedingSessions)
     {
         const int maxPdfCharsPerLine = 92;
+        const float maxPdfWidthPt = 500f;
+        const int maxBabyHeaderLines = 8;
+
         var allBodyLines = new List<string>();
         foreach (var f in feedingSessions)
         {
             var alertaStr = f.AlertaTemperatura ? " [ALERTA TEMP]" : "";
+            var finalStr = f.MasaFinalG.HasValue
+                ? string.Create(CultureInfo.InvariantCulture, $"{f.MasaFinalG.Value:F1}g")
+                : "N/D";
+            var volStr = f.MlConsumidos.HasValue
+                ? string.Create(CultureInfo.InvariantCulture, $"{f.MlConsumidos.Value:F1} ml")
+                : "N/D";
+            var tempStr = f.TempC.HasValue
+                ? string.Create(CultureInfo.InvariantCulture, $"{f.TempC.Value:F1} °C")
+                : "N/D";
             var rawLine = string.Create(
                 CultureInfo.InvariantCulture,
-                $"[Toma] {f.Inicio:yyyy-MM-dd HH:mm} | Inicial: {f.MasaInicialG:F1}g | Final: {f.MasaFinalG ?? 0:F1}g | Vol: {f.MlConsumidos ?? 0:F1} ml | T: {f.TempC ?? 0:F1} °C{alertaStr}");
-            allBodyLines.AddRange(WrapPdfLine(EscapePdfText(rawLine), maxPdfCharsPerLine));
+                $"[Toma] {f.Inicio:yyyy-MM-dd HH:mm} | Inicial: {f.MasaInicialG:F1}g | Final: {finalStr} | Vol: {volStr} | T: {tempStr}{alertaStr}");
+            allBodyLines.AddRange(WrapPdfLine(EscapePdfText(rawLine), maxPdfCharsPerLine, maxPdfWidthPt));
         }
 
         foreach (var s in sleepSessions)
         {
+            var movStr = s.MovimientoPromedio.HasValue
+                ? string.Create(CultureInfo.InvariantCulture, $"{s.MovimientoPromedio.Value:F3} kg/m")
+                : "N/D";
             var rawLine = string.Create(
                 CultureInfo.InvariantCulture,
-                $"[Sueño {s.Tipo}] {s.Inicio:yyyy-MM-dd HH:mm} | Mov prom: {s.MovimientoPromedio ?? 0:F3} kg/m | Interrupciones: {s.Interrupciones}");
-            allBodyLines.AddRange(WrapPdfLine(EscapePdfText(rawLine), maxPdfCharsPerLine));
+                $"[Sueño {s.Tipo}] {s.Inicio:yyyy-MM-dd HH:mm} | Mov prom: {movStr} | Interrupciones: {s.Interrupciones}");
+            allBodyLines.AddRange(WrapPdfLine(EscapePdfText(rawLine), maxPdfCharsPerLine, maxPdfWidthPt));
         }
 
         if (allBodyLines.Count == 0)
@@ -672,11 +687,19 @@ public sealed class FeedingHistoryAndToysService
 
         var generatedAt = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         var babyNameEscaped = EscapePdfText(baby.Nombre);
-        var headerLineCountEstimate =
-            ($"Reporte Histórico Cuna Inteligente (RF32) - Bebé: {babyNameEscaped} (Pág. 999/999)".Length <= maxPdfCharsPerLine
-                ? 1
-                : 1 + WrapPdfLine($"Bebé: {babyNameEscaped}", maxPdfCharsPerLine).Count) + 3;
-        var linesPerPage = Math.Max(20, Math.Min(38, (760 - (headerLineCountEstimate * 16) - 8 - 50) / 16));
+        var probeFullTitle = $"Reporte Histórico Cuna Inteligente (RF32) - Bebé: {babyNameEscaped} (Pág. 999/999)";
+        var singleLineHeaderFits = probeFullTitle.Length <= maxPdfCharsPerLine
+            && EstimateHelveticaWidthPt(probeFullTitle) <= maxPdfWidthPt;
+
+        var wrappedBabyHeaderLines = singleLineHeaderFits
+            ? Array.Empty<string>()
+            : BoundHeaderLines(
+                WrapPdfLine($"Bebé: {babyNameEscaped}", maxPdfCharsPerLine, maxPdfWidthPt),
+                maxBabyHeaderLines);
+
+        var headerLineCountEstimate = (singleLineHeaderFits ? 1 : 1 + wrappedBabyHeaderLines.Count) + 3;
+        var availableBodyHeightPt = 760 - (headerLineCountEstimate * 16) - 8 - 50;
+        var linesPerPage = Math.Max(1, Math.Min(38, (availableBodyHeightPt / 16) + 1));
 
         var pageChunks = new List<List<string>>();
         for (var i = 0; i < allBodyLines.Count; i += linesPerPage)
@@ -697,15 +720,14 @@ public sealed class FeedingHistoryAndToysService
 
             var y = 760;
             var headerLines = new List<string>();
-            var fullTitle = $"Reporte Histórico Cuna Inteligente (RF32) - Bebé: {babyNameEscaped} (Pág. {p + 1}/{totalPages})";
-            if (fullTitle.Length <= maxPdfCharsPerLine)
+            if (singleLineHeaderFits)
             {
-                headerLines.Add(fullTitle);
+                headerLines.Add($"Reporte Histórico Cuna Inteligente (RF32) - Bebé: {babyNameEscaped} (Pág. {p + 1}/{totalPages})");
             }
             else
             {
                 headerLines.Add($"Reporte Histórico Cuna Inteligente (RF32) - Pág. {p + 1}/{totalPages}");
-                headerLines.AddRange(WrapPdfLine($"Bebé: {babyNameEscaped}", maxPdfCharsPerLine));
+                headerLines.AddRange(wrappedBabyHeaderLines);
             }
             headerLines.Add(EscapePdfText($"Fecha de nacimiento: {baby.FechaNacimiento:yyyy-MM-dd} | Generado: {generatedAt} UTC"));
             headerLines.Add(EscapePdfText($"Sesiones de sueño: {sleepSessions.Count} | Sesiones de alimentación: {feedingSessions.Count}"));
@@ -822,11 +844,11 @@ public sealed class FeedingHistoryAndToysService
                     sb.Append(' ');
                     break;
                 default:
-                    if (ch >= 0x20 && ch <= 0xFF)
+                    if ((ch >= 0x20 && ch <= 0x7E) || (ch >= 0xA0 && ch <= 0xFF))
                     {
                         sb.Append(ch);
                     }
-                    else if (ch > 0xFF)
+                    else if (ch >= 0x7F)
                     {
                         sb.Append('?');
                     }
@@ -836,9 +858,32 @@ public sealed class FeedingHistoryAndToysService
         return sb.ToString();
     }
 
-    private static IReadOnlyList<string> WrapPdfLine(string escapedText, int maxChars)
+    private static IReadOnlyList<string> BoundHeaderLines(IReadOnlyList<string> lines, int maxLines)
     {
-        if (string.IsNullOrEmpty(escapedText) || escapedText.Length <= maxChars)
+        if (lines.Count <= maxLines)
+        {
+            return lines;
+        }
+
+        var bounded = new List<string>(maxLines);
+        for (var i = 0; i < maxLines; i++)
+        {
+            bounded.Add(lines[i]);
+        }
+
+        var last = bounded[maxLines - 1];
+        bounded[maxLines - 1] = last.Length > 3 ? last[..^3].TrimEnd() + "..." : "...";
+        return bounded;
+    }
+
+    private static IReadOnlyList<string> WrapPdfLine(string escapedText, int maxChars, float maxWidthPt)
+    {
+        if (string.IsNullOrEmpty(escapedText))
+        {
+            return new[] { string.Empty };
+        }
+
+        if (escapedText.Length <= maxChars && EstimateHelveticaWidthPt(escapedText) <= maxWidthPt)
         {
             return new[] { escapedText };
         }
@@ -850,18 +895,39 @@ public sealed class FeedingHistoryAndToysService
         while (remaining.Length > 0)
         {
             var prefix = isFirst ? string.Empty : "  ";
-            var limit = Math.Max(16, maxChars - prefix.Length);
-            if (remaining.Length <= limit)
+            var prefixWidth = EstimateHelveticaWidthPt(prefix);
+            var charLimit = Math.Max(8, maxChars - prefix.Length);
+            var widthLimit = Math.Max(80f, maxWidthPt - prefixWidth);
+
+            var fitCount = 0;
+            var accWidth = 0f;
+            while (fitCount < remaining.Length && fitCount < charLimit)
+            {
+                var charWidth = GetHelveticaCharWidthPt(remaining[fitCount]);
+                if (fitCount > 0 && accWidth + charWidth > widthLimit)
+                {
+                    break;
+                }
+                accWidth += charWidth;
+                fitCount++;
+            }
+
+            if (fitCount == 0)
+            {
+                fitCount = 1;
+            }
+
+            if (fitCount >= remaining.Length)
             {
                 lines.Add(prefix + remaining.ToString());
                 break;
             }
 
-            var slice = remaining[..limit];
+            var slice = remaining[..fitCount];
             var breakIdx = slice.LastIndexOf(' ');
-            if (breakIdx < limit / 3)
+            if (breakIdx < fitCount / 3 || breakIdx <= 0)
             {
-                breakIdx = limit;
+                breakIdx = fitCount;
             }
 
             lines.Add(prefix + remaining[..breakIdx].TrimEnd().ToString());
@@ -870,6 +936,99 @@ public sealed class FeedingHistoryAndToysService
         }
 
         return lines;
+    }
+
+    private static float EstimateHelveticaWidthPt(string text, float fontSize = 10f)
+    {
+        var total = 0f;
+        foreach (var ch in text)
+        {
+            total += GetHelveticaCharWidthPt(ch, fontSize);
+        }
+        return total;
+    }
+
+    private static float GetHelveticaCharWidthPt(char ch, float fontSize = 10f)
+    {
+        var thousandths = ch switch
+        {
+            ' ' => 278,
+            '!' => 278,
+            '"' => 355,
+            '#' or '$' => 556,
+            '%' => 889,
+            '&' => 667,
+            '\'' => 191,
+            '(' or ')' => 333,
+            '*' => 389,
+            '+' => 584,
+            ',' => 278,
+            '-' => 333,
+            '.' or '/' => 278,
+            >= '0' and <= '9' => 556,
+            ':' or ';' => 278,
+            '<' or '=' or '>' => 584,
+            '?' => 556,
+            '@' => 1015,
+            'A' or 'B' => 667,
+            'C' or 'D' => 722,
+            'E' => 667,
+            'F' => 611,
+            'G' => 778,
+            'H' => 722,
+            'I' => 278,
+            'J' => 500,
+            'K' => 667,
+            'L' => 556,
+            'M' => 833,
+            'N' => 722,
+            'O' => 778,
+            'P' => 667,
+            'Q' => 778,
+            'R' => 722,
+            'S' => 667,
+            'T' => 611,
+            'U' => 722,
+            'V' => 667,
+            'W' => 944,
+            'X' or 'Y' => 667,
+            'Z' => 611,
+            '[' or ']' => 278,
+            '_' => 556,
+            '`' => 333,
+            'a' or 'b' => 556,
+            'c' => 500,
+            'd' or 'e' => 556,
+            'f' => 278,
+            'g' or 'h' => 556,
+            'i' or 'j' => 222,
+            'k' => 500,
+            'l' => 222,
+            'm' => 833,
+            'n' or 'o' or 'p' or 'q' => 556,
+            'r' => 333,
+            's' => 500,
+            't' => 278,
+            'u' => 556,
+            'v' => 500,
+            'w' => 722,
+            'x' or 'y' or 'z' => 500,
+            '{' or '}' => 334,
+            '|' => 260,
+            '~' => 584,
+            '°' => 400,
+            '¡' => 333,
+            '¿' => 611,
+            'Á' or 'É' or 'Ü' => 667,
+            'Í' => 278,
+            'Ó' => 778,
+            'Ú' or 'Ñ' => 722,
+            'á' or 'é' or 'ó' or 'ú' or 'ñ' or 'ü' => 556,
+            'í' => 278,
+            _ => 778
+        };
+
+        return thousandths * fontSize / 1000f;
     }
 
     private static string SanitizeFileName(string input)

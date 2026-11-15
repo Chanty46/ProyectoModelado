@@ -586,6 +586,126 @@ public class PostgrestRepositoryTests
         Assert.Equal("seq=5 <= ultimo_seq=8", doc.RootElement.GetProperty("detalle").GetProperty("info").GetString());
     }
 
+    [Fact]
+    public async Task DeviceRepo_GetAndUpdateCribThresholds_FilterFamilyAndSerializeSnakeCase()
+    {
+        var cunaId = Guid.Parse("eeeeeeee-1111-1111-1111-111111111111");
+        var familyId = Guid.Parse("eeeeeeee-2222-2222-2222-222222222222");
+
+        var handler = new RecordingHttpMessageHandler(req =>
+        {
+            if (req.Method == HttpMethod.Get && req.RelativePathAndQuery.StartsWith("cunas?", StringComparison.Ordinal))
+            {
+                return JsonResponse($$"""
+                    [{"id":"{{cunaId}}","family_id":"{{familyId}}","escala_masa":0.22}]
+                    """);
+            }
+            if (req.Method == HttpMethod.Get && req.RelativePathAndQuery.StartsWith("umbrales?", StringComparison.Ordinal))
+            {
+                return JsonResponse("""[]""");
+            }
+            return JsonResponse("[]");
+        });
+
+        using var http = new HttpClient(handler);
+        var repo = new PostgrestDeviceTelemetryRepository(http, BuildConfig());
+
+        var cfg = await repo.GetCribConfigAsync(cunaId, familyId, CancellationToken.None);
+        Assert.Equal(0.22m, cfg.EscalaMasa);
+        Assert.Equal(18.0m, cfg.TempMin);
+        Assert.Equal(26.0m, cfg.TempMax);
+
+        var updated = await repo.UpdateCribThresholdsAsync(
+            cunaId,
+            familyId,
+            new UpdateCribThresholdsRequest(19.5m, 25.5m, 42.0m, 58.0m, 0.120m, false, 0.012m, 0.25m, null),
+            CancellationToken.None);
+
+        Assert.Equal(19.5m, updated.TempMin);
+        Assert.False(updated.MovimientoAlertaActiva);
+        Assert.Equal(4, handler.Requests.Count);
+        Assert.Contains($"cunas?id=eq.{cunaId}&family_id=eq.{familyId}&select=id,family_id,escala_masa&limit=1", handler.Requests[0].RelativePathAndQuery);
+        Assert.Equal(HttpMethod.Patch, handler.Requests[2].Method);
+        Assert.Equal($"cunas?id=eq.{cunaId}&family_id=eq.{familyId}", handler.Requests[2].RelativePathAndQuery);
+        Assert.Equal(HttpMethod.Patch, handler.Requests[3].Method);
+        Assert.Equal($"umbrales?cuna_id=eq.{cunaId}", handler.Requests[3].RelativePathAndQuery);
+        using var patchDoc = JsonDocument.Parse(handler.Requests[3].Body!);
+        Assert.Equal(19.5m, patchDoc.RootElement.GetProperty("temp_min").GetDecimal());
+        Assert.False(patchDoc.RootElement.GetProperty("movimiento_alerta_activa").GetBoolean());
+    }
+
+    [Fact]
+    public async Task AccountRepo_ListLinkedTelegramChatsByFamilyAsync_HandlesEmptyAndMultipleDistinctMembers()
+    {
+        var familyEmpty = Guid.Parse("ffffffff-1111-1111-1111-111111111111");
+        var familyFull = Guid.Parse("ffffffff-2222-2222-2222-222222222222");
+        var userA = Guid.Parse("ffffffff-3333-3333-3333-333333333333");
+        var userB = Guid.Parse("ffffffff-4444-4444-4444-444444444444");
+
+        var handler = new RecordingHttpMessageHandler(req =>
+        {
+            if (req.RelativePathAndQuery.Contains(familyEmpty.ToString(), StringComparison.Ordinal))
+            {
+                return JsonResponse("[]");
+            }
+            if (req.RelativePathAndQuery.StartsWith("usuarios?", StringComparison.Ordinal))
+            {
+                return JsonResponse($$"""
+                    [
+                      {"id":"{{userA}}","family_id":"{{familyFull}}","email":"a@cuna.local","rol":"principal"},
+                      {"id":"{{userB}}","family_id":"{{familyFull}}","email":"b@cuna.local","rol":"secundario"}
+                    ]
+                    """);
+            }
+            return JsonResponse("""
+                [
+                  {"chat_id":777001},
+                  {"chat_id":null},
+                  {"chat_id":777001},
+                  {"chat_id":777002}
+                ]
+                """);
+        });
+
+        using var http = new HttpClient(handler);
+        var repo = new PostgrestFamilyAccountRepository(http, BuildConfig());
+
+        var emptyChats = await repo.ListLinkedTelegramChatsByFamilyAsync(familyEmpty, CancellationToken.None);
+        Assert.Empty(emptyChats);
+        Assert.Single(handler.Requests);
+
+        var chats = await repo.ListLinkedTelegramChatsByFamilyAsync(familyFull, CancellationToken.None);
+        Assert.Equal(new long[] { 777001, 777002 }, chats);
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.Equal(
+            $"telegram_vinculos?usuario_id=in.({userA},{userB})&chat_id=not.is.null&select=chat_id",
+            handler.Requests[2].RelativePathAndQuery);
+    }
+
+    [Fact]
+    public async Task DeviceRepo_LogCaregiverActionAsync_SerializesAuditPayload()
+    {
+        var familyId = Guid.Parse("12121212-1111-1111-1111-111111111111");
+        var userId = Guid.Parse("12121212-2222-2222-2222-222222222222");
+        var profileId = Guid.Parse("12121212-3333-3333-3333-333333333333");
+        var ts = new DateTimeOffset(2026, 11, 14, 19, 35, 0, TimeSpan.Zero);
+
+        var handler = new RecordingHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.Created));
+        using var http = new HttpClient(handler);
+        var repo = new PostgrestDeviceTelemetryRepository(http, BuildConfig());
+
+        await repo.LogCaregiverActionAsync(
+            new CaregiverAuditLogEntry(familyId, userId, profileId, "exportar_historial_rf32", "{\"format\":\"pdf\"}", ts),
+            CancellationToken.None);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Post, req.Method);
+        Assert.Equal("bitacora", req.RelativePathAndQuery);
+        using var doc = JsonDocument.Parse(req.Body!);
+        Assert.Equal("exportar_historial_rf32", doc.RootElement.GetProperty("accion").GetString());
+        Assert.Equal("pdf", doc.RootElement.GetProperty("detalle").GetProperty("format").GetString());
+    }
+
     private static HttpResponseMessage JsonResponse(string json, HttpStatusCode status = HttpStatusCode.OK) =>
         new(status)
         {
