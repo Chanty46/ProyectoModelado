@@ -6,6 +6,10 @@ import {
   canManagePrincipalActions,
   buildTelegramDeepLink,
   downsampleFloatToPcm8,
+  evaluateComfortBand,
+  estimateMilkMl,
+  computeMobileLedFrame,
+  parseOptionalFiniteNumber,
 } from "./formatters.ts";
 
 test("formatRemainingCountdown formats MM:SS cleanly and returns null when expired", () => {
@@ -59,4 +63,43 @@ test("downsampleFloatToPcm8 downsamples audio safely to unsigned 8-bit PCM", () 
   const clipHigh = new Float32Array([2.5, 2.5, 2.5, 2.5, 2.5, 2.5]);
   const pcmHigh = downsampleFloatToPcm8(clipHigh, 48000, 8000, 1200);
   assert.equal(pcmHigh[0], 238); // 128 + 110
+});
+
+test("evaluateComfortBand classifies safe, low, high and unknown values accurately", () => {
+  assert.equal(evaluateComfortBand(null, 18, 26).status, "unknown");
+  assert.equal(evaluateComfortBand(undefined, 18, 26).status, "unknown");
+  assert.equal(evaluateComfortBand(22, 18, 26).status, "ok");
+  assert.equal(evaluateComfortBand(16.5, 18, 26).status, "low");
+  assert.equal(evaluateComfortBand(28.0, 18, 26).status, "high");
+  assert.equal(evaluateComfortBand(36.5, 35.0, 38.5).status, "ok");
+});
+
+test("estimateMilkMl converts gram difference using 1.03 g/ml density without negative values", () => {
+  assert.equal(estimateMilkMl(216.3, 113.3), 100);
+  assert.equal(estimateMilkMl(100, 120), 0);
+  assert.equal(estimateMilkMl(Number.NaN, 100), 0);
+});
+
+test("computeMobileLedFrame renders ola_circular, cascada_suave and destello_alterno across 9 LEDs", () => {
+  const wave = computeMobileLedFrame("ola_circular", 0, 9);
+  assert.equal(wave.length, 9);
+  assert.equal(wave[0], true);
+  assert.equal(wave[8], true);
+  assert.equal(wave.filter(Boolean).length, 2);
+
+  const cascade = computeMobileLedFrame("cascada_suave", 3, 9);
+  assert.deepEqual(cascade.slice(0, 4), [true, true, true, false]);
+
+  const blink = computeMobileLedFrame("destello_alterno", 1, 9);
+  assert.equal(blink[0], false);
+  assert.equal(blink[1], true);
+});
+
+test("parseOptionalFiniteNumber avoids converting empty strings into zero", () => {
+  assert.equal(parseOptionalFiniteNumber(""), null);
+  assert.equal(parseOptionalFiniteNumber("   "), null);
+  assert.equal(parseOptionalFiniteNumber("abc"), null);
+  assert.equal(parseOptionalFiniteNumber("Infinity"), null);
+  assert.equal(parseOptionalFiniteNumber("0"), 0);
+  assert.equal(parseOptionalFiniteNumber(" 36.5 "), 36.5);
 });

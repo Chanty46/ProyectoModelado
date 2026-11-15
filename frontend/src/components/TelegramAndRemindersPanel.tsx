@@ -105,8 +105,12 @@ export function TelegramAndRemindersPanel({
     if (!generatedCode) {
       return;
     }
-    await navigator.clipboard.writeText(generatedCode.comandoEjemplo);
-    setCopiedCommand(true);
+    try {
+      await navigator.clipboard.writeText(generatedCode.comandoEjemplo);
+      setCopiedCommand(true);
+    } catch {
+      onError("No se pudo copiar el comando automáticamente al portapapeles.");
+    }
   }
 
   async function handleUnlinkTelegram() {
@@ -177,6 +181,24 @@ export function TelegramAndRemindersPanel({
             <code className="font-mono">/estado</code> en &lt; 2 s (RF39).
           </p>
 
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-600 text-[10px] font-bold text-white">1</span>
+              <p className="mt-1 text-[11px] font-semibold text-slate-800">Genera código</p>
+              <p className="text-[10px] text-slate-500">Vigencia 10 min</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-600 text-[10px] font-bold text-white">2</span>
+              <p className="mt-1 text-[11px] font-semibold text-slate-800">Envía /start</p>
+              <p className="text-[10px] text-slate-500">En @CunasInteligentes</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-600 text-[10px] font-bold text-white">3</span>
+              <p className="mt-1 text-[11px] font-semibold text-slate-800">Usa /estado</p>
+              <p className="text-[10px] text-slate-500">Alertas en vivo &lt; 2 s</p>
+            </div>
+          </div>
+
           {botStatus && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px]">
               <span
@@ -200,7 +222,7 @@ export function TelegramAndRemindersPanel({
                   : "Modo simulación local (sin TELEGRAM_BOT_TOKEN)"}
               </span>
               <span className="text-slate-500">
-                Requiere <code className="font-mono">/start</code> previo (Telegram Bot API usa Chat ID, no teléfono)
+                Requiere <code className="font-mono">/start</code> previo (usa Chat ID, no teléfono)
               </span>
             </div>
           )}
@@ -339,23 +361,41 @@ export function TelegramAndRemindersPanel({
           El servicio en segundo plano evalúa el tiempo transcurrido desde la última toma y notifica por el panel y Telegram cuando se cumple el intervalo (1 a 8 horas).
         </p>
 
-        <form onSubmit={handleSaveReminder} className="space-y-3 pt-2 border-t border-slate-100">
-          <div className="flex items-center justify-between gap-4">
-            <label htmlFor="reminder-interval" className="text-xs font-medium text-slate-700">
-              Intervalo entre tomas (1–8 horas):
-            </label>
-            <select
-              id="reminder-interval"
-              value={intervalHours}
-              onChange={(e) => setIntervalHours(Number(e.target.value))}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
-            >
-              {[1, 2, 3, 4, 5, 6, 7, 8].map((h) => (
-                <option key={h} value={h}>
-                  Cada {h} {h === 1 ? "hora" : "horas"}
-                </option>
+        <form onSubmit={handleSaveReminder} className="space-y-3.5 pt-2 border-t border-slate-100">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-4">
+              <label htmlFor="reminder-interval" className="text-xs font-medium text-slate-700">
+                Intervalo entre tomas (1–8 horas):
+              </label>
+              <select
+                id="reminder-interval"
+                value={intervalHours}
+                onChange={(e) => setIntervalHours(Number(e.target.value))}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+              >
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((h) => (
+                  <option key={h} value={h}>
+                    Cada {h} {h === 1 ? "hora" : "horas"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-wrap gap-1.5" aria-label="Accesos rápidos de intervalo">
+              {[2, 3, 4, 6, 8].map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  onClick={() => setIntervalHours(h)}
+                  className={`rounded-lg px-2.5 py-1 text-[11px] font-medium border transition-colors ${
+                    intervalHours === h
+                      ? "border-teal-600 bg-teal-50 text-teal-800"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {h}h
+                </button>
               ))}
-            </select>
+            </div>
           </div>
 
           <label className="inline-flex items-center gap-2 text-xs text-slate-700">

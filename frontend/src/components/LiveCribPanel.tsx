@@ -10,6 +10,8 @@ import {
   PlayCircle,
   Sliders,
   Bell,
+  Baby,
+  CheckCircle2,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -19,6 +21,7 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
+  Legend,
 } from "recharts";
 import { supabase } from "../lib/supabase";
 import {
@@ -26,7 +29,11 @@ import {
   ApiError,
   type LiveCribStatusResponse,
 } from "../lib/api";
-import { formatRemainingCountdown, resolveRgbLedStatus } from "../lib/formatters";
+import {
+  evaluateComfortBand,
+  formatRemainingCountdown,
+  resolveRgbLedStatus,
+} from "../lib/formatters";
 
 interface LiveCribPanelProps {
   accessToken: string;
@@ -50,6 +57,7 @@ export function LiveCribPanel({
   const [showThresholdsForm, setShowThresholdsForm] = useState<boolean>(false);
   const [countdownNowMs, setCountdownNowMs] = useState<number>(() => Date.now());
   const isDirtyLightRef = useRef<boolean>(false);
+  const showThresholdsFormRef = useRef<boolean>(false);
 
   // Estado del formulario de umbrales RF08
   const [tempMin, setTempMin] = useState("18.0");
@@ -72,6 +80,10 @@ export function LiveCribPanel({
     setEscalaMasa(data.umbrales.escalaMasa.toString());
   }, []);
 
+  useEffect(() => {
+    showThresholdsFormRef.current = showThresholdsForm;
+  }, [showThresholdsForm]);
+
   const fetchLiveStatus = useCallback(
     async (signal?: AbortSignal) => {
       try {
@@ -80,7 +92,7 @@ export function LiveCribPanel({
         if (!isDirtyLightRef.current) {
           setLightLevel(data.cuna.luzEncendida ? data.cuna.luzNivel : 50);
         }
-        if (!showThresholdsForm) {
+        if (!showThresholdsFormRef.current) {
           syncThresholdInputsFromData(data);
         }
       } catch (err) {
@@ -92,12 +104,16 @@ export function LiveCribPanel({
         }
       }
     },
-    [accessToken, cunaId, onError, showThresholdsForm, syncThresholdInputsFromData]
+    [accessToken, cunaId, onError, syncThresholdInputsFromData]
   );
 
   useEffect(() => {
     isDirtyLightRef.current = false;
+    showThresholdsFormRef.current = false;
     setShowThresholdsForm(false);
+  }, [cunaId]);
+
+  useEffect(() => {
     const controller = new AbortController();
     void fetchLiveStatus(controller.signal);
     return () => controller.abort();
@@ -211,6 +227,7 @@ export function LiveCribPanel({
         escalaMasa: Number(escalaMasa),
         perfilId: activeProfileId,
       });
+      showThresholdsFormRef.current = false;
       setShowThresholdsForm(false);
       await fetchLiveStatus();
     } catch (err) {
@@ -247,28 +264,50 @@ export function LiveCribPanel({
     movimiento: t.indiceMovimiento,
   }));
 
+  const tempBand = evaluateComfortBand(latest?.tempC, live.umbrales.tempMin, live.umbrales.tempMax);
+  const humBand = evaluateComfortBand(latest?.humedad, live.umbrales.humMin, live.umbrales.humMax);
+  const movPercent =
+    latest?.indiceMovimiento !== null &&
+    latest?.indiceMovimiento !== undefined &&
+    live.umbrales.movimientoUmbral > 0
+      ? Math.min(100, Math.round((latest.indiceMovimiento / live.umbrales.movimientoUmbral) * 100))
+      : 0;
+  const lampGlowOpacity = live.cuna.luzEncendida ? Math.max(0.15, live.cuna.luzNivel / 100) : 0;
+
   return (
     <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-      {/* Barra de Estado Operativo, Alarma RF04 y Modo Atención RF05 */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div
-            className={`flex h-10 w-10 items-center justify-center rounded-full ${
-              live.cuna.modoOperacion === "alarma"
-                ? "bg-red-100 text-red-600"
-                : live.cuna.modoOperacion === "atencion"
-                ? "bg-amber-100 text-amber-600"
-                : "bg-emerald-100 text-emerald-600"
-            }`}
-          >
-            {live.cuna.modoOperacion === "alarma" ? (
-              <ShieldAlert className="h-5 w-5" aria-hidden="true" />
-            ) : live.cuna.modoOperacion === "atencion" ? (
-              <PauseCircle className="h-5 w-5" aria-hidden="true" />
-            ) : (
-              <Activity className="h-5 w-5" aria-hidden="true" />
+      {/* Gemelo Visual y Estado Operativo (RF04, RF05, RF09) */}
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center gap-3.5">
+          {/* Indicador visual del estado de cuna + luz nocturna */}
+          <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-slate-900 text-white overflow-hidden">
+            {live.cuna.luzEncendida && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-0 bg-amber-400 transition-opacity duration-500"
+                style={{ opacity: lampGlowOpacity * 0.45 }}
+              />
             )}
+            <div className="relative z-10 flex flex-col items-center">
+              {live.cuna.modoOperacion === "alarma" ? (
+                <ShieldAlert className="h-6 w-6 text-red-400 animate-soft-glow" aria-hidden="true" />
+              ) : babyPresent ? (
+                <Baby className="h-6 w-6 text-emerald-300" aria-hidden="true" />
+              ) : (
+                <Activity className="h-6 w-6 text-teal-300" aria-hidden="true" />
+              )}
+              <span
+                className={`mt-1 h-1.5 w-6 rounded-full ${
+                  live.cuna.modoOperacion === "alarma"
+                    ? "bg-red-500"
+                    : live.cuna.modoOperacion === "atencion"
+                    ? "bg-amber-400"
+                    : "bg-emerald-400"
+                }`}
+              />
+            </div>
           </div>
+
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold text-slate-900">
@@ -306,7 +345,7 @@ export function LiveCribPanel({
                 </span>
               )}
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-slate-500 mt-1">
               {live.cuna.modoOperacion === "atencion" && live.cuna.modoAtencionExpiraEn
                 ? `Alarma de retiro inhibida hasta las ${new Date(live.cuna.modoAtencionExpiraEn).toLocaleTimeString()} (15 min)`
                 : "Retiro imprevisto activa ventana de gracia de 5 s antes de sonar alarma en Central."}
@@ -319,7 +358,7 @@ export function LiveCribPanel({
             <button
               type="button"
               onClick={() => handleToggleMode("monitoreo")}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-emerald-700"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 transition-colors"
             >
               <PlayCircle className="h-4 w-4" aria-hidden="true" />
               Reanudar Monitoreo
@@ -328,7 +367,7 @@ export function LiveCribPanel({
             <button
               type="button"
               onClick={() => handleToggleMode("atencion")}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-medium text-white hover:bg-amber-600"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-medium text-white shadow-sm hover:bg-amber-600 transition-colors"
             >
               <PauseCircle className="h-4 w-4" aria-hidden="true" />
               {live.cuna.modoOperacion === "alarma"
@@ -341,55 +380,94 @@ export function LiveCribPanel({
 
       {/* Tarjetas de Telemetría en Tiempo Real (< 1 s, IU-01) */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
+        <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-1.5">
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Temperatura (RF07)</span>
             <Thermometer className="h-4 w-4 text-teal-600" aria-hidden="true" />
           </div>
-          <p className="mt-1.5 text-lg font-bold text-slate-900">
+          <p className="text-lg font-bold text-slate-900">
             {latest?.tempC !== null && latest?.tempC !== undefined ? `${latest.tempC.toFixed(1)} °C` : "—"}
           </p>
+          <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${
+                tempBand.status === "ok"
+                  ? "bg-emerald-500"
+                  : tempBand.status === "unknown"
+                  ? "bg-slate-300"
+                  : "bg-amber-500"
+              }`}
+              style={{ width: `${tempBand.barPercent}%` }}
+            />
+          </div>
           <p className="text-[11px] text-slate-500">
             Umbral: {live.umbrales.tempMin}–{live.umbrales.tempMax} °C
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
+        <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-1.5">
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Humedad (RF07)</span>
             <Droplets className="h-4 w-4 text-sky-600" aria-hidden="true" />
           </div>
-          <p className="mt-1.5 text-lg font-bold text-slate-900">
+          <p className="text-lg font-bold text-slate-900">
             {latest?.humedad !== null && latest?.humedad !== undefined ? `${latest.humedad.toFixed(1)} %` : "—"}
           </p>
+          <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${
+                humBand.status === "ok"
+                  ? "bg-sky-500"
+                  : humBand.status === "unknown"
+                  ? "bg-slate-300"
+                  : "bg-amber-500"
+              }`}
+              style={{ width: `${humBand.barPercent}%` }}
+            />
+          </div>
           <p className="text-[11px] text-slate-500">
             Umbral: {live.umbrales.humMin}–{live.umbrales.humMax} %
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
+        <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-1.5">
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Masa Colchón (D14)</span>
             <Scale className="h-4 w-4 text-indigo-600" aria-hidden="true" />
           </div>
-          <p className="mt-1.5 text-lg font-bold text-slate-900">
+          <p className="text-lg font-bold text-slate-900">
             {latest?.masaKg !== null && latest?.masaKg !== undefined ? `${latest.masaKg.toFixed(3)} kg` : "—"}
           </p>
-          <p className="text-[11px] text-slate-500">
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+              babyPresent
+                ? "bg-emerald-50 text-emerald-700"
+                : "bg-slate-100 text-slate-600"
+            }`}
+          >
+            {babyPresent && <CheckCircle2 className="h-3 w-3" aria-hidden="true" />}
             {babyPresent ? "Presencia detectada" : `Sin presencia (≤ ${presenceThresholdKg} kg)`}
-          </p>
+          </span>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
+        <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-1.5">
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Movimiento (RF06/29)</span>
             <Activity className="h-4 w-4 text-amber-600" aria-hidden="true" />
           </div>
-          <p className="mt-1.5 text-lg font-bold text-slate-900">
+          <p className="text-lg font-bold text-slate-900">
             {latest?.indiceMovimiento !== null && latest?.indiceMovimiento !== undefined
               ? `${latest.indiceMovimiento.toFixed(3)} kg/m`
               : "—"}
           </p>
+          <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${
+                movPercent >= 90 ? "bg-red-500" : movPercent >= 65 ? "bg-amber-500" : "bg-teal-500"
+              }`}
+              style={{ width: `${movPercent}%` }}
+            />
+          </div>
           <p className="text-[11px] text-slate-500">
             Máx: {live.umbrales.movimientoUmbral} kg/min
           </p>
@@ -465,13 +543,12 @@ export function LiveCribPanel({
               <button
                 type="button"
                 onClick={() => {
-                  setShowThresholdsForm((v) => {
-                    const opening = !v;
-                    if (opening && live) {
-                      syncThresholdInputsFromData(live);
-                    }
-                    return opening;
-                  });
+                  const opening = !showThresholdsForm;
+                  showThresholdsFormRef.current = opening;
+                  setShowThresholdsForm(opening);
+                  if (opening && live) {
+                    syncThresholdInputsFromData(live);
+                  }
                 }}
                 className="rounded-lg border border-teal-600 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-800 hover:bg-teal-100"
               >
@@ -580,17 +657,18 @@ export function LiveCribPanel({
               Sin muestras recientes de telemetría.
             </p>
           ) : (
-            <div className="h-36 w-full">
+            <div className="h-44 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="hora" tick={{ fontSize: 10 }} />
-                  <YAxis yAxisId="env" tick={{ fontSize: 10 }} />
-                  <YAxis yAxisId="mov" orientation="right" tick={{ fontSize: 10 }} domain={[0, "auto"]} />
-                  <Tooltip />
-                  <Line yAxisId="env" type="monotone" dataKey="tempC" stroke="#0d9488" name="Temp (°C)" dot={false} />
-                  <Line yAxisId="env" type="monotone" dataKey="humedad" stroke="#0284c7" name="Humedad (%)" dot={false} />
-                  <Line yAxisId="mov" type="monotone" dataKey="movimiento" stroke="#d97706" name="Mov (kg/m)" dot={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="hora" tick={{ fontSize: 10, fill: "#64748b" }} />
+                  <YAxis yAxisId="env" tick={{ fontSize: 10, fill: "#64748b" }} />
+                  <YAxis yAxisId="mov" orientation="right" tick={{ fontSize: 10, fill: "#64748b" }} domain={[0, "auto"]} />
+                  <Tooltip contentStyle={{ borderRadius: "0.75rem", fontSize: "11px", borderColor: "#cbd5e1" }} />
+                  <Legend wrapperStyle={{ fontSize: "11px" }} />
+                  <Line yAxisId="env" type="monotone" dataKey="tempC" stroke="#0d9488" strokeWidth={2} connectNulls name="Temp (°C)" dot={false} />
+                  <Line yAxisId="env" type="monotone" dataKey="humedad" stroke="#0284c7" strokeWidth={2} connectNulls name="Humedad (%)" dot={false} />
+                  <Line yAxisId="mov" type="monotone" dataKey="movimiento" stroke="#d97706" strokeWidth={2} connectNulls name="Mov (kg/m)" dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

@@ -91,3 +91,82 @@ export function downsampleFloatToPcm8(
 
   return pcm;
 }
+
+export interface ComfortBandEvaluation {
+  status: "ok" | "low" | "high" | "unknown";
+  label: string;
+  barPercent: number;
+}
+
+/** Evalúa si una lectura física está dentro de su rango seguro y calcula su posición visual (0–100 %). */
+export function evaluateComfortBand(
+  value: number | null | undefined,
+  min: number,
+  max: number
+): ComfortBandEvaluation {
+  if (value === null || value === undefined || Number.isNaN(value) || max <= min) {
+    return { status: "unknown", label: "Sin lectura", barPercent: 0 };
+  }
+
+  const span = max - min;
+  const paddedMin = min - span * 0.35;
+  const paddedMax = max + span * 0.35;
+  const pct = Math.max(4, Math.min(96, ((value - paddedMin) / (paddedMax - paddedMin)) * 100));
+
+  if (value < min) {
+    return { status: "low", label: "Por debajo del umbral", barPercent: Math.round(pct) };
+  }
+  if (value > max) {
+    return { status: "high", label: "Por encima del umbral", barPercent: Math.round(pct) };
+  }
+  return { status: "ok", label: "En rango seguro", barPercent: Math.round(pct) };
+}
+
+/** Calcula volumen estimado en ml usando densidad 1.03 g/ml (RF17). */
+export function estimateMilkMl(initialMassG: number, finalMassG: number): number {
+  if (Number.isNaN(initialMassG) || Number.isNaN(finalMassG)) {
+    return 0;
+  }
+  const diff = Math.max(0, initialMassG - finalMassG);
+  return Math.round((diff / 1.03) * 10) / 10;
+}
+
+/** Parsea un campo numérico de formulario devolviendo null si está vacío, tiene espacios o no es finito. */
+export function parseOptionalFiniteNumber(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Calcula el estado encendido/apagado de los 9 LEDs del móvil colgante para previsualización visual (RF13). */
+export function computeMobileLedFrame(pattern: string, step: number, count: number = 9): boolean[] {
+  const safeCount = Math.max(1, count);
+  const frame = new Array<boolean>(safeCount).fill(false);
+  const safeStep = Math.max(0, Math.floor(step));
+
+  if (pattern === "cascada_suave") {
+    const lit = safeStep % (safeCount + 1);
+    for (let i = 0; i < lit; i++) {
+      frame[i] = true;
+    }
+    return frame;
+  }
+
+  if (pattern === "destello_alterno") {
+    const parity = safeStep % 2;
+    for (let i = 0; i < safeCount; i++) {
+      frame[i] = i % 2 === parity;
+    }
+    return frame;
+  }
+
+  // Por defecto: ola_circular (dos LEDs contiguos girando en anillo)
+  const head = safeStep % safeCount;
+  const tail = (head + safeCount - 1) % safeCount;
+  frame[head] = true;
+  frame[tail] = true;
+  return frame;
+}

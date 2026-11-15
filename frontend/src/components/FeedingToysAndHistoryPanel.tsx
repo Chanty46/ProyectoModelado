@@ -16,6 +16,12 @@ import {
   type SongCatalogItem,
   type ToysAndPeripheralsStatusResponse,
 } from "../lib/api";
+import {
+  computeMobileLedFrame,
+  estimateMilkMl,
+  evaluateComfortBand,
+  parseOptionalFiniteNumber,
+} from "../lib/formatters";
 
 interface FeedingToysAndHistoryPanelProps {
   accessToken: string;
@@ -39,6 +45,7 @@ export function FeedingToysAndHistoryPanel({
   // Control del Móvil Colgante RF13
   const [mobilePattern, setMobilePattern] = useState<string>("ola_circular");
   const [mobileSpeed, setMobileSpeed] = useState<"lenta" | "media" | "rapida">("media");
+  const [mobileStep, setMobileStep] = useState<number>(0);
   const mobileDuration = 60;
 
   // Sesión de Alimentación RF15–RF17, RF37
@@ -58,7 +65,15 @@ export function FeedingToysAndHistoryPanel({
   const [isSubmittingMobile, setIsSubmittingMobile] = useState<boolean>(false);
   const [isSubmittingSong, setIsSubmittingSong] = useState<boolean>(false);
 
-  const loadCribPeripherals = useCallback(async () => {
+  useEffect(() => {
+    const intervalMs = mobileSpeed === "rapida" ? 160 : mobileSpeed === "media" ? 320 : 600;
+    const timer = window.setInterval(() => {
+      setMobileStep((prev) => (prev + 1) % 90);
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [mobileSpeed]);
+
+  const loadCribPeripherals = useCallback(async (syncBottleInputs = false) => {
     try {
       const [songList, toys] = await Promise.all([
         accountApi.listSongs(accessToken, cunaId),
@@ -71,11 +86,13 @@ export function FeedingToysAndHistoryPanel({
         );
       }
       setToysStatus(toys);
-      if (toys.ultimaMasaBiberonG !== null) {
-        setInitialMassG(toys.ultimaMasaBiberonG.toString());
-      }
-      if (toys.ultimaTempBiberonC !== null) {
-        setFoodTempC(toys.ultimaTempBiberonC.toString());
+      if (syncBottleInputs) {
+        if (toys.ultimaMasaBiberonG !== null) {
+          setInitialMassG(toys.ultimaMasaBiberonG.toString());
+        }
+        if (toys.ultimaTempBiberonC !== null) {
+          setFoodTempC(toys.ultimaTempBiberonC.toString());
+        }
       }
     } catch (err) {
       if (err instanceof ApiError) {
@@ -117,7 +134,11 @@ export function FeedingToysAndHistoryPanel({
   }, [accessToken, bebeId, filterFrom, filterTo, onError]);
 
   useEffect(() => {
-    void loadCribPeripherals();
+    void loadCribPeripherals(true);
+    const timer = window.setInterval(() => {
+      void loadCribPeripherals(false);
+    }, 4000);
+    return () => window.clearInterval(timer);
   }, [loadCribPeripherals]);
 
   useEffect(() => {
@@ -131,12 +152,19 @@ export function FeedingToysAndHistoryPanel({
       return;
     }
     onError(null);
+    const parsedInitialMassG = parseOptionalFiniteNumber(initialMassG);
+    if (parsedInitialMassG === null) {
+      onError("Ingresa una masa inicial válida en gramos.");
+      return;
+    }
+    const parsedFoodTempC = parseOptionalFiniteNumber(foodTempC);
+
     setIsSubmittingFeeding(true);
     try {
       const created = await accountApi.startFeedingSession(accessToken, {
         bebeId,
-        masaInicialG: Number(initialMassG),
-        tempC: foodTempC ? Number(foodTempC) : null,
+        masaInicialG: parsedInitialMassG,
+        tempC: parsedFoodTempC,
         perfilId: activeProfileId,
       });
       setActiveFeedingSession(created);
@@ -156,10 +184,16 @@ export function FeedingToysAndHistoryPanel({
       return;
     }
     onError(null);
+    const parsedFinalMassG = parseOptionalFiniteNumber(finalMassG);
+    if (parsedFinalMassG === null) {
+      onError("Ingresa una masa final válida en gramos.");
+      return;
+    }
+
     setIsSubmittingFeeding(true);
     try {
       await accountApi.finishFeedingSession(accessToken, activeFeedingSession.id, {
-        masaFinalG: Number(finalMassG),
+        masaFinalG: parsedFinalMassG,
         perfilId: activeProfileId,
       });
       setActiveFeedingSession(null);
@@ -279,8 +313,15 @@ export function FeedingToysAndHistoryPanel({
     }
   }
 
-  const parsedTemp = Number(foodTempC);
-  const isTempUnsafe = !Number.isNaN(parsedTemp) && (parsedTemp < 35.0 || parsedTemp > 38.5);
+  const parsedTemp = parseOptionalFiniteNumber(foodTempC);
+  const isTempUnsafe = parsedTemp !== null && (parsedTemp < 35.0 || parsedTemp > 38.5);
+  const bottleTempBand = evaluateComfortBand(parsedTemp, 35.0, 38.5);
+  const parsedFinalMass = parseOptionalFiniteNumber(finalMassG);
+  const estimatedConsumedMl =
+    activeFeedingSession && parsedFinalMass !== null
+      ? estimateMilkMl(activeFeedingSession.masaInicialG, parsedFinalMass)
+      : null;
+  const mobileLeds = computeMobileLedFrame(mobilePattern, mobileStep, 9);
 
   return (
     <div className="space-y-4">
@@ -297,7 +338,42 @@ export function FeedingToysAndHistoryPanel({
             <span className="text-[11px] text-slate-500">Densidad: 1.03 g/ml</span>
           </div>
 
-          {isTempUnsafe && (
+          {/* Banda térmica visual segura (35.0 – 38.5 °C) */}
+          <div className="rounded-lg border border-slate-100 bg-slate-50 p-2.5 space-y-1.5">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="font-medium text-slate-700">Banda Térmica IR (RF16)</span>
+              <span
+                className={`font-semibold ${
+                  bottleTempBand.status === "ok"
+                    ? "text-emerald-700"
+                    : bottleTempBand.status === "unknown"
+                    ? "text-slate-500"
+                    : "text-amber-700"
+                }`}
+              >
+                {parsedTemp === null ? "—" : `${parsedTemp.toFixed(1)} °C`} ·{" "}
+                {bottleTempBand.label}
+              </span>
+            </div>
+            <div className="relative h-2 w-full rounded-full overflow-hidden flex bg-slate-200">
+              <div className="h-full w-1/4 bg-sky-300" title="Frío (< 35.0 °C)" />
+              <div className="h-full w-2/4 bg-emerald-400" title="Rango seguro (35.0–38.5 °C)" />
+              <div className="h-full w-1/4 bg-rose-400" title="Caliente (> 38.5 °C)" />
+              {bottleTempBand.status !== "unknown" && (
+                <div
+                  className="absolute top-0 h-2 w-1.5 -translate-x-1/2 rounded-full bg-slate-900 ring-2 ring-white transition-all duration-300"
+                  style={{ left: `${bottleTempBand.barPercent}%` }}
+                />
+              )}
+            </div>
+            <div className="flex justify-between text-[10px] text-slate-400">
+              <span>Frío &lt;35 °C</span>
+              <span className="font-medium text-emerald-700">Ideal 35.0–38.5 °C</span>
+              <span>Caliente &gt;38.5 °C</span>
+            </div>
+          </div>
+
+          {isTempUnsafe && parsedTemp !== null && (
             <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
               <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
               <span>
@@ -348,10 +424,15 @@ export function FeedingToysAndHistoryPanel({
             </form>
           ) : (
             <form onSubmit={handleFinishFeeding} className="space-y-2.5 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
-              <p className="text-xs font-medium text-teal-900">
-                Toma en curso · M_inicial: <strong>{activeFeedingSession.masaInicialG} g</strong>
-                {activeFeedingSession.tempC !== null ? ` · Temp: ${activeFeedingSession.tempC} °C` : ""}
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-teal-900">
+                <p className="font-medium">
+                  Toma en curso · M_inicial: <strong>{activeFeedingSession.masaInicialG} g</strong>
+                  {activeFeedingSession.tempC !== null ? ` · Temp: ${activeFeedingSession.tempC} °C` : ""}
+                </p>
+                <span className="rounded-full bg-white border border-teal-200 px-2 py-0.5 text-[11px] font-semibold text-teal-800">
+                  Ingesta est.: {estimatedConsumedMl !== null ? `${estimatedConsumedMl.toFixed(1)} ml` : "—"}
+                </span>
+              </div>
               <div className="flex items-center gap-2">
                 <input
                   type="number"
@@ -441,7 +522,26 @@ export function FeedingToysAndHistoryPanel({
             </button>
           </div>
 
-          <form onSubmit={handlePlayMobile} className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-100">
+          {/* Vista previa animada del aro de 9 LEDs (RF13) */}
+          <div className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-900 px-3 py-2">
+            <span className="text-[11px] font-medium text-slate-300">
+              Vista previa 9 LEDs ({mobilePattern.replace("_", " ")})
+            </span>
+            <div className="flex items-center gap-1.5" aria-label="Simulación de los 9 LEDs del móvil">
+              {mobileLeds.map((on, idx) => (
+                <span
+                  key={idx}
+                  className={`h-2.5 w-2.5 rounded-full transition-all duration-150 ${
+                    on
+                      ? "bg-amber-300 shadow-[0_0_8px_rgba(252,211,77,0.9)] scale-110"
+                      : "bg-slate-700"
+                  }`}
+                />
+              ))}
+            </div>
+          </div>
+
+          <form onSubmit={handlePlayMobile} className="grid grid-cols-3 gap-2 pt-1">
             <select
               value={mobilePattern}
               onChange={(e) => setMobilePattern(e.target.value)}

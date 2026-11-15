@@ -51,6 +51,8 @@ export default function App() {
   const [newProfileAvatar, setNewProfileAvatar] = useState("F1");
   const [invitationResult, setInvitationResult] = useState<CreateInvitationResponse | null>(null);
   const [copiedInvite, setCopiedInvite] = useState(false);
+  const [confirmRevokeMember, setConfirmRevokeMember] = useState<{ id: string; email: string } | null>(null);
+  const [isRevokingMember, setIsRevokingMember] = useState(false);
 
   const clearLocalSessionState = useCallback(() => {
     setAccessToken(null);
@@ -330,21 +332,26 @@ export default function App() {
     }
   }
 
-  async function handleRevokeMember(memberUserId: string, email: string) {
-    if (!accessToken) {
+  function handleRevokeMember(memberUserId: string, email: string) {
+    setConfirmRevokeMember({ id: memberUserId, email });
+  }
+
+  async function confirmRevokeMemberAction() {
+    if (!accessToken || !confirmRevokeMember) {
       return;
     }
-    if (!window.confirm(`¿Confirmas revocar el acceso de ${email} a la familia (RF22)?`)) {
-      return;
-    }
+    setIsRevokingMember(true);
     setErrorBanner(null);
     try {
-      await accountApi.revokeMember(accessToken, memberUserId);
+      await accountApi.revokeMember(accessToken, confirmRevokeMember.id);
+      setConfirmRevokeMember(null);
       await refreshAccountContext(accessToken);
     } catch (err) {
       if (err instanceof ApiError) {
         setErrorBanner(err.message);
       }
+    } finally {
+      setIsRevokingMember(false);
     }
   }
 
@@ -352,25 +359,38 @@ export default function App() {
     if (!invitationResult) {
       return;
     }
-    await navigator.clipboard.writeText(invitationResult.inviteUrl);
-    setCopiedInvite(true);
+    try {
+      await navigator.clipboard.writeText(invitationResult.inviteUrl);
+      setCopiedInvite(true);
+    } catch {
+      setErrorBanner("No se pudo copiar el enlace de invitación automáticamente.");
+    }
   }
 
+  const activeCaregiver = account?.perfiles.find((p) => p.id === activeProfileId) ?? null;
+
   const mainDashboard = (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4 px-6 py-4">
+    <div className="min-h-screen nursery-backdrop text-slate-900">
+      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4 px-6 py-3.5">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-teal-50 text-teal-600">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-teal-500 to-emerald-600 text-white shadow-sm">
               <ShieldCheck className="h-5 w-5" aria-hidden="true" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold text-slate-900">
-                Cuna Inteligente
-              </h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base sm:text-lg font-bold tracking-tight text-slate-900">
+                  Cuna Inteligente
+                </h1>
+                {activeCaregiver && (
+                  <span className="hidden sm:inline-flex items-center rounded-full bg-teal-50 border border-teal-200 px-2 py-0.5 text-[11px] font-medium text-teal-800">
+                    Turno: {activeCaregiver.nombre}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500">
                 {account?.familia
-                  ? `${account.familia.nombre} · Rol: ${account.rol === "principal" ? "Usuario Principal" : "Usuario Secundario"}`
+                  ? `${account.familia.nombre} · ${account.rol === "principal" ? "Usuario Principal" : "Usuario Secundario"}`
                   : "Supervisión Perimetral, Microclima y Nutrición Infantil"}
               </p>
             </div>
@@ -382,7 +402,7 @@ export default function App() {
                 title={`TCP :${health.tcpPort} · Última verificación: ${new Date(health.timestamp).toLocaleTimeString()}`}
                 className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700"
               >
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
                 TCP :{health.tcpPort} · {health.connectedDevices} nodo(s)
               </span>
             ) : (
@@ -396,7 +416,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleSignOut}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
               >
                 <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
                 Cerrar sesión
@@ -410,7 +430,7 @@ export default function App() {
         {errorBanner && (
           <div
             role="alert"
-            className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+            className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 shadow-sm"
           >
             <AlertTriangle className="h-5 w-5 shrink-0 text-red-600 mt-0.5" aria-hidden="true" />
             <div className="flex-1">
@@ -429,29 +449,67 @@ export default function App() {
         )}
 
         {loading ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-            Cargando sesión...
+          <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500 shadow-sm">
+            Cargando sesión segura...
           </div>
         ) : !accessToken ? (
-          <section className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-sm text-center space-y-5">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-teal-50 text-teal-600">
-              <ShieldCheck className="h-6 w-6" aria-hidden="true" />
+          <section className="mx-auto max-w-4xl grid grid-cols-1 gap-6 md:grid-cols-5 items-stretch">
+            <div className="md:col-span-3 rounded-2xl border border-teal-200/70 bg-gradient-to-br from-teal-700 via-teal-800 to-slate-900 p-7 text-white shadow-md flex flex-col justify-between space-y-6">
+              <div className="space-y-3">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold tracking-wide text-teal-100">
+                  <Activity className="h-3.5 w-3.5" aria-hidden="true" />
+                  Ecosistema Ciberfísico · 5 Nodos IoT
+                </span>
+                <h2 className="text-2xl font-bold leading-snug">
+                  Cuidado inteligente y tranquilo en todo momento
+                </h2>
+                <p className="text-xs leading-relaxed text-teal-100/90">
+                  Supervisa la presencia en colchón, microclima ambiental, nutrición térmica por biberón y alertas instantáneas en web y Telegram desde una sola consola familiar.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5 text-xs">
+                <div className="rounded-xl bg-white/10 p-3 backdrop-blur-sm">
+                  <p className="font-semibold text-white">Detección &lt; 1 s</p>
+                  <p className="text-[11px] text-teal-100/80 mt-0.5">Retiro imprevisto y Modo Atención (15 min)</p>
+                </div>
+                <div className="rounded-xl bg-white/10 p-3 backdrop-blur-sm">
+                  <p className="font-semibold text-white">Biberón 35–38.5 °C</p>
+                  <p className="text-[11px] text-teal-100/80 mt-0.5">Sensor IR sin contacto y cálculo ml</p>
+                </div>
+                <div className="rounded-xl bg-white/10 p-3 backdrop-blur-sm">
+                  <p className="font-semibold text-white">Estímulos Seguros</p>
+                  <p className="text-[11px] text-teal-100/80 mt-0.5">Móvil 9 LEDs, melodías y luz ≤ 65 dBA</p>
+                </div>
+                <div className="rounded-xl bg-white/10 p-3 backdrop-blur-sm">
+                  <p className="font-semibold text-white">Telegram /estado</p>
+                  <p className="text-[11px] text-teal-100/80 mt-0.5">Alertas redundantes y recordatorios</p>
+                </div>
+              </div>
             </div>
-            <div className="space-y-2">
-              <h2 className="text-xl font-semibold text-slate-900">
-                Iniciar Sesión Familiar (RF01)
-              </h2>
-              <p className="text-sm text-slate-600">
-                Accede con tu cuenta de Google para gestionar la cuna inteligente o unirte a una familia existente.
+
+            <div className="md:col-span-2 rounded-2xl border border-slate-200 bg-white p-7 shadow-sm flex flex-col justify-center text-center space-y-5">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-50 text-teal-600">
+                <ShieldCheck className="h-6 w-6" aria-hidden="true" />
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-xl font-semibold text-slate-900">
+                  Iniciar Sesión Familiar (RF01)
+                </h2>
+                <p className="text-xs leading-relaxed text-slate-600">
+                  Accede con tu cuenta de Google para gestionar tu cuna inteligente o aceptar una invitación familiar.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                className="w-full rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500 transition-colors"
+              >
+                Continuar con Google
+              </button>
+              <p className="text-[11px] text-slate-400">
+                Autenticación cifrada mediante Supabase Auth &amp; RLS por familia.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={handleGoogleLogin}
-              className="w-full rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500"
-            >
-              Continuar con Google
-            </button>
           </section>
         ) : !account?.familia ? (
           <section className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white p-8 shadow-sm space-y-5">
@@ -808,6 +866,50 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {confirmRevokeMember && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="revoke-dialog-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-600">
+                <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div>
+                <h3 id="revoke-dialog-title" className="text-sm font-semibold text-slate-900">
+                  Confirmar revocación de acceso (RF22)
+                </h3>
+                <p className="mt-1 text-xs text-slate-600">
+                  ¿Confirmas revocar el acceso de{" "}
+                  <strong className="font-mono text-slate-800">{confirmRevokeMember.email}</strong> a esta familia? Sus credenciales perderán acceso inmediato a cunas y telemetría.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isRevokingMember}
+                onClick={() => setConfirmRevokeMember(null)}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isRevokingMember}
+                onClick={() => void confirmRevokeMemberAction()}
+                className="rounded-lg bg-red-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {isRevokingMember ? "Revocando..." : "Sí, revocar acceso"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -824,6 +926,7 @@ export default function App() {
           />
         }
       />
+      <Route path="*" element={mainDashboard} />
     </Routes>
   );
 }
