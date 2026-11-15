@@ -782,13 +782,15 @@ public sealed class DeviceTcpServer : BackgroundService
 
         public async Task<bool> TrySendJsonLineAsync(object envelope, CancellationToken ct)
         {
-            var json = JsonSerializer.Serialize(envelope);
-            var bytes = Encoding.UTF8.GetBytes(json + "\n");
+            var utf8Bytes = JsonSerializer.SerializeToUtf8Bytes(envelope);
+            var buffer = new byte[utf8Bytes.Length + 1];
+            Buffer.BlockCopy(utf8Bytes, 0, buffer, 0, utf8Bytes.Length);
+            buffer[^1] = (byte)'\n';
 
             await _writeLock.WaitAsync(ct);
             try
             {
-                await _stream.WriteAsync(bytes, ct);
+                await _stream.WriteAsync(buffer, ct);
                 await _stream.FlushAsync(ct);
                 return true;
             }

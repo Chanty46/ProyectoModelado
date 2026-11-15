@@ -122,7 +122,7 @@ public sealed class TcpLineReader : IDisposable
     private static int FindNewlineIndex(byte[] buffer, int start, int end)
         => buffer.AsSpan(start, end - start).IndexOf((byte)'\n');
 
-    private static string DecodeTrimmedLine(byte[] buffer, int length)
+    internal static string DecodeTrimmedLine(byte[] buffer, int length)
     {
         while (length > 0 && buffer[length - 1] == (byte)'\r')
         {
@@ -153,44 +153,49 @@ public static class TcpProtocolParser
         Stream stream,
         CancellationToken ct)
     {
-        var buffer = new byte[MaxLineBytes];
-        var count = 0;
-        var singleByte = new byte[1];
-
-        while (true)
+        var buffer = ArrayPool<byte>.Shared.Rent(MaxLineBytes);
+        try
         {
-            var read = await stream.ReadAsync(singleByte.AsMemory(0, 1), ct);
-            if (read == 0)
+            var count = 0;
+            while (true)
             {
-                if (count == 0)
+                if (count >= MaxLineBytes)
                 {
-                    return (null, false, true);
-                }
-
-                return (Encoding.UTF8.GetString(buffer, 0, count).TrimEnd('\r'), false, false);
-            }
-
-            var b = singleByte[0];
-            if (b == (byte)'\n')
-            {
-                return (Encoding.UTF8.GetString(buffer, 0, count).TrimEnd('\r'), false, false);
-            }
-
-            if (count >= MaxLineBytes)
-            {
-                // Consumir hasta el salto de línea o fin de stream para cerrar o rechazar limpiamente
-                while (await stream.ReadAsync(singleByte.AsMemory(0, 1), ct) > 0)
-                {
-                    if (singleByte[0] == (byte)'\n')
+                    // Consumir hasta el salto de línea o fin de stream para cerrar o rechazar limpiamente
+                    while (await stream.ReadAsync(buffer.AsMemory(0, 1), ct) > 0)
                     {
-                        break;
+                        if (buffer[0] == (byte)'\n')
+                        {
+                            break;
+                        }
                     }
+
+                    return (null, true, false);
                 }
 
-                return (null, true, false);
-            }
+                var read = await stream.ReadAsync(buffer.AsMemory(count, 1), ct);
+                if (read == 0)
+                {
+                    if (count == 0)
+                    {
+                        return (null, false, true);
+                    }
 
-            buffer[count++] = b;
+                    return (TcpLineReader.DecodeTrimmedLine(buffer, count), false, false);
+                }
+
+                var b = buffer[count];
+                if (b == (byte)'\n')
+                {
+                    return (TcpLineReader.DecodeTrimmedLine(buffer, count), false, false);
+                }
+
+                count++;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 

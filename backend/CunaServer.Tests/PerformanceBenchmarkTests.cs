@@ -210,6 +210,121 @@ public sealed class PerformanceBenchmarkTests
         Assert.True(exportSw.ElapsedMilliseconds < 5000);
     }
 
+    [Fact]
+    public void Benchmark_TcpProtocolParser_TelemetryAndEventEnvelopeThroughput()
+    {
+        const int iterations = 10_000;
+        var cunaId = Guid.NewGuid();
+        var centralDeviceId = Guid.NewGuid();
+        var colchonDeviceId = Guid.NewGuid();
+
+        // Warmup
+        var warmTelemetry = new
+        {
+            v = 1,
+            t = "telemetry",
+            seq = 1L,
+            ts = 1762550000L,
+            d = new { temp_c = 23.5m, hum_pct = 52.0m, battery_pct = 88 }
+        };
+        var warmJson = JsonSerializer.Serialize(warmTelemetry);
+        Assert.True(TcpProtocolParser.TryParseEnvelope(warmJson, out var warmEnv, out _, out _));
+        Assert.True(TcpProtocolParser.TryValidateTelemetry(
+            DeviceTypes.Central, cunaId, centralDeviceId, warmEnv!.Seq,
+            DateTimeOffset.FromUnixTimeSeconds(warmEnv.Ts ?? 0), warmEnv.D,
+            out var warmRecord, out _));
+        Assert.NotNull(warmRecord);
+
+        var sw = Stopwatch.StartNew();
+        var processed = 0;
+
+        for (var i = 0; i < iterations; i++)
+        {
+            if ((i & 1) == 0)
+            {
+                var envelope = new
+                {
+                    v = 1,
+                    t = "telemetry",
+                    seq = (long)i,
+                    ts = 1762550000L + i,
+                    d = new
+                    {
+                        temp_c = 20.0m + (i % 100) * 0.1m,
+                        hum_pct = 40.0m + (i % 200) * 0.1m,
+                        battery_pct = 50 + (i % 50)
+                    }
+                };
+
+                var serialized = JsonSerializer.Serialize(envelope);
+                if (!TcpProtocolParser.TryParseEnvelope(serialized, out var parsed, out _, out _) || parsed is null)
+                {
+                    continue;
+                }
+
+                if (TcpProtocolParser.TryValidateTelemetry(
+                    DeviceTypes.Central,
+                    cunaId,
+                    centralDeviceId,
+                    parsed.Seq,
+                    DateTimeOffset.FromUnixTimeSeconds(parsed.Ts ?? 0),
+                    parsed.D,
+                    out var record,
+                    out _) && record is not null)
+                {
+                    processed++;
+                }
+            }
+            else
+            {
+                var envelope = new
+                {
+                    v = 1,
+                    t = "event",
+                    seq = (long)i,
+                    ts = 1762550000L + i,
+                    d = new
+                    {
+                        kind = (i % 4) switch
+                        {
+                            0 => "removal",
+                            1 => "env_out_of_range",
+                            2 => "movement_high",
+                            _ => "button_attention"
+                        },
+                        detalles = "alerta de prueba en benchmark",
+                        source_seq = i
+                    }
+                };
+
+                var serialized = JsonSerializer.Serialize(envelope);
+                if (!TcpProtocolParser.TryParseEnvelope(serialized, out var parsed, out _, out _) || parsed is null)
+                {
+                    continue;
+                }
+
+                if (TcpProtocolParser.TryValidateEvent(
+                    cunaId,
+                    colchonDeviceId,
+                    DateTimeOffset.FromUnixTimeSeconds(parsed.Ts ?? 0),
+                    parsed.D,
+                    out var alert,
+                    out _,
+                    out _) && alert is not null)
+                {
+                    processed++;
+                }
+            }
+        }
+        sw.Stop();
+
+        var opsPerSec = processed / Math.Max(0.0001, sw.Elapsed.TotalSeconds);
+        _output.WriteLine($"[PERF] TcpProtocolParser Telemetría + Eventos: {processed} sobres en {sw.Elapsed.TotalMilliseconds:F2} ms ({opsPerSec:N0} sobres/s)");
+
+        Assert.Equal(iterations, processed);
+        Assert.True(sw.ElapsedMilliseconds < 1500, $"Procesamiento de sobres demasiado lento: {sw.ElapsedMilliseconds} ms (presupuesto < 1500 ms)");
+    }
+
     private sealed class BenchmarkJwtValidator(Guid userId) : IJwtTokenValidator
     {
         public Task<AuthenticatedIdentity?> ValidateBearerTokenAsync(string? authorizationHeader, CancellationToken ct)

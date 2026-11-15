@@ -4,6 +4,7 @@ para los 5 dispositivos del ecosistema Cuna Inteligente (M3).
 """
 
 from __future__ import annotations
+import base64
 from collections import deque
 from dataclasses import dataclass, field
 import json
@@ -252,8 +253,6 @@ class CentralAudioPlayer:
     last_max_duty_u16: int = 0
 
     def process_audio_chunk(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        import base64
-
         rate = int(params.get("rate", 8000))
         pcm_b64 = str(params.get("pcm_b64", ""))
         raw_bytes = base64.b64decode(pcm_b64)
