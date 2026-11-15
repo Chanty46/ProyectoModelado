@@ -441,3 +441,4 @@ __pycache__/
 .venv/
 *.pem
 *.key
+.agents/

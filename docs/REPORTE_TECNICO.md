@@ -161,11 +161,11 @@ SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES (HITO M11)
 ===================================================================================
 1. Backend C# (.NET 8 LTS — xUnit):
    - Archivo de solución: backend/CunaServer.sln
-   - Pruebas ejecutadas: 53 pruebas
-   - Estado: 53 PASADAS / 0 FALLIDAS (Duración: 2.5 s)
+   - Pruebas ejecutadas: 54 pruebas
+   - Estado: 54 PASADAS / 0 FALLIDAS (Duración: 1 s)
    - Cobertura: Cuentas familiares, RLS, contratos HTTP PostgREST con mock
      (PostgrestFamilyAccountRepository y PostgrestDeviceTelemetryRepository),
-     TCP framing (ArrayPool TcpLineReader), máquina de estados, consolidación
+     TCP framing (ArrayPool TcpLineReader + DeviceTcpServer UTF-8), máquina de estados, consolidación
      multi-dispositivo, watchdog, bot de Telegram HTTP + deep-link /start + 429 retry,
      spikes de audio, cálculo de ml, CSV sanitization, PDF WinAnsiEncoding + envoltura
      por ancho en puntos Helvetica <= 500 pt / 92 columnas y checklist E2E.
@@ -173,7 +173,7 @@ SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES (HITO M11)
 2. Simuladores TCP (Python 3 — unittest):
    - Módulo: simulators/test_simulators.py
    - Pruebas ejecutadas: 10 pruebas
-   - Estado: 10 PASADAS / 0 FALLIDAS (Duración: 0.036 s)
+   - Estado: 10 PASADAS / 0 FALLIDAS (Duración: 0.027 s)
    - Cobertura: Detección de retiro <= 1 s, filtro de ruido 5 Hz O(1), rampa de luz PWM,
      decodificación PCM de audio, rechazo de tramas > 4 KB, estrés 10000 ticks,
      backoff <= 30 s y manejo de comandos intercalados antes del ack.
@@ -181,12 +181,14 @@ SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES (HITO M11)
 3. Firmware MicroPython (RP2040 — unittest):
    - Módulo: firmware/test_firmware.py
    - Pruebas ejecutadas: 7 pruebas
-   - Estado: 7 PASADAS / 0 FALLIDAS (Duración: 0.010 s)
+   - Estado: 7 PASADAS / 0 FALLIDAS (Duración: 0.009 s)
    - Cobertura: Asignación de pines RP2040 (GPIO 0-28), búfer circular de 48 h (2880 reg),
      máquina de estados de los 5 nodos, compatibilidad de notas SQL/memoria y vaciado TCP.
 
-4. Frontend React (TypeScript + Node Test + Vite):
-   - Pruebas unitarias de helpers: npm test (9 PASADAS / 0 FALLIDAS — formatters.test.ts)
+4. Frontend React (TypeScript + Node Test + Vitest + Vite):
+   - Pruebas unitarias de helpers: formatters.test.ts (9 PASADAS / 0 FALLIDAS)
+   - Pruebas interactivas de componentes UI (Vitest + JSDOM + Testing Library): 34 PASADAS / 0 FALLIDAS en 5 archivos (`CribAndDeviceManager.test.tsx`, `FeedingToysAndHistoryPanel.test.tsx`, `LiveCribPanel.test.tsx`, `TelegramAndRemindersPanel.test.tsx`, `OtherPanels.test.tsx`)
+   - Total Frontend (`npm test`): 43 PASADAS / 0 FALLIDAS
    - Verificación de tipos: tsc --noEmit / tsc -b (0 ERRORES)
    - Empaquetado de producción: vite build (2098 módulos transformados)
 
@@ -196,16 +198,16 @@ SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES (HITO M11)
 6. Auditoría de Seguridad (verify_environment.py):
    - Escaneo de secretos reales (sb_secret, tokens, contraseñas): 0 COINCIDENCIAS
 ===================================================================================
-TOTAL: 79 pruebas automáticas + verificación HTTP Bot API mock con 100 % de éxito.
+TOTAL: 114 pruebas automáticas + verificación HTTP Bot API mock con 100 % de éxito.
 ===================================================================================
 ```
 
 ### 4.1 Métricas de Rendimiento y Refinamiento Técnico (Hito M11)
-- **Parser TCP (`TcpLineReader` con `ArrayPool<byte>`)**: `10 000` líneas procesadas en `4.90 ms` (`2 042 692 líneas/s`).
-- **Validación JWT ES256 con caché JWKS (`CachedJwksSnapshot`)**: `2 000` verificaciones en `100.02 ms` (`19 995 ops/s`).
-- **Latencia de consulta en vivo (`GET /api/cribs/{id}/live`)**: `50` consultas en `34.38 ms` (promedio `0.69 ms/req`).
-- **Exportación RF32 (CSV + PDF, 120 registros)**: `27.09 ms` (presupuesto `< 10 000 ms`); PDF multipágina verificado con `pdfinfo`/`pdftotext`/`pdftoppm` (Letter 612x792 pts, envoltura proporcional Helvetica <= 500 pt / <= 92 columnas, margen inferior >= 50 pt).
-- **Higiene, UI y robustez**: helper unificado de autorización familiar y endpoints, límite en colas de telemetría/alertas/auditoría en memoria, eliminación de consultas N+1 hacia PostgREST de Telegram, prevención de sobrescritura de sliders al editar en frontend, soporte real de micrófono Web Audio API en el intercomunicador, corrección de autocierre del formulario de umbrales (`showThresholdsFormRef`), parseo estricto de entradas numéricas opcionales (`parseOptionalFiniteNumber` evitando alertas falsas `0.0 °C`), ajuste de anchura en puntos y cota de encabezados en PDF RF32 (sin falsos `0.0 °C` en tomas abiertas), disposición determinista de `JsonDocument` en auditoría PostgREST y filtro explícito `family_id` en lectura de umbrales.
+- **Parser TCP (`TcpLineReader` con `ArrayPool<byte>` y serialización UTF-8 directa en `DeviceTcpServer`)**: `10 000` líneas procesadas en `3.38 ms` (`2 958 055 líneas/s`); validación completa de `10 000` sobres `TcpProtocolParser` (telemetría + eventos) en `49.47 ms` (`202 128 sobres/s`).
+- **Validación JWT ES256 con caché JWKS (`CachedJwksSnapshot`)**: `2 000` verificaciones en `105.46 ms` (`18 965 ops/s`).
+- **Latencia de consulta en vivo (`GET /api/cribs/{id}/live`)**: `50` consultas en `30.31 ms` (promedio `0.61 ms/req`).
+- **Exportación RF32 (CSV + PDF, 120 registros)**: `21.17 ms` (presupuesto `< 10 000 ms`); PDF multipágina verificado con `pdfinfo`/`pdftotext`/`pdftoppm` (Letter 612x792 pts, envoltura proporcional Helvetica <= 500 pt / <= 92 columnas, margen inferior >= 50 pt).
+- **Higiene, UI y robustez**: helper unificado de autorización familiar y endpoints, límite en colas de telemetría/alertas/auditoría en memoria, eliminación de consultas N+1 hacia PostgREST de Telegram, prevención de sobrescritura de sliders al editar en frontend, soporte real de micrófono Web Audio API en el intercomunicador, placeholders esqueletizados animados durante la carga de telemetría, disposición responsiva `<540 px` y contraste accesible WCAG AA, corrección de autocierre del formulario de umbrales (`showThresholdsFormRef`), parseo estricto de entradas numéricas opcionales (`parseOptionalFiniteNumber` evitando alertas falsas `0.0 °C`), ajuste de anchura en puntos y cota de encabezados en PDF RF32 (sin falsos `0.0 °C` en tomas abiertas), disposición determinista de `JsonDocument` en auditoría PostgREST y filtro explícito `family_id` en lectura de umbrales.
 
 ---
 
