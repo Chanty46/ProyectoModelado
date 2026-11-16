@@ -63,15 +63,38 @@ DEFAULT_SIM_DEVICES: Dict[str, Dict[str, str]] = {
 }
 
 
+LOCAL_DEVICES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "devices.local.json")
+
+
+def load_local_devices(path: str) -> Dict[str, Dict[str, str]]:
+    """Lee `devices.local.json` (ignorado por Git): {tipo: {device_id, token}} de dispositivos emparejados desde la web."""
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8-sig") as fh:
+        data = json.load(fh)
+    return {
+        kind: entry
+        for kind, entry in data.items()
+        if kind in DEFAULT_SIM_DEVICES and entry.get("device_id") and entry.get("token")
+    }
+
+
 class DeviceSimulatorNode:
-    def __init__(self, host: str, port: int, kind: str, once: bool = False) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        kind: str,
+        once: bool = False,
+        override: Dict[str, str] | None = None,
+    ) -> None:
         info = DEFAULT_SIM_DEVICES[kind]
         self.host = host
         self.port = port
         self.kind = kind
-        self.device_id = info["device_id"]
+        self.device_id = (override or {}).get("device_id") or info["device_id"]
         self.device_type = info["device_type"]
-        self.token = os.environ.get(info["token_env"], info["default_demo_token"])
+        self.token = (override or {}).get("token") or os.environ.get(info["token_env"], info["default_demo_token"])
         self.once = once
         self.buffer = OfflineRingBuffer()
         self.mattress_engine = MattressRuleEngine()
@@ -210,10 +233,18 @@ class DeviceSimulatorNode:
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    kinds: List[str] = (
-        list(DEFAULT_SIM_DEVICES.keys()) if args.device == "all" else [args.device]
-    )
-    nodes = [DeviceSimulatorNode(args.host, args.port, k, once=args.once) for k in kinds]
+    local = load_local_devices(args.devices_file)
+    if args.device != "all":
+        kinds: List[str] = [args.device]
+    elif local:
+        kinds = list(local.keys())
+        print(f"Usando dispositivos emparejados de {os.path.basename(args.devices_file)}: {', '.join(kinds)}")
+    else:
+        kinds = list(DEFAULT_SIM_DEVICES.keys())
+    nodes = [
+        DeviceSimulatorNode(args.host, args.port, k, once=args.once, override=local.get(k))
+        for k in kinds
+    ]
     await asyncio.gather(*(n.run() for n in nodes))
 
 
@@ -227,6 +258,11 @@ def main() -> None:
         default="all",
     )
     parser.add_argument("--once", action="store_true", help="Ejecuta un ciclo de conexión y termina")
+    parser.add_argument(
+        "--devices-file",
+        default=LOCAL_DEVICES_FILE,
+        help="JSON con {tipo: {device_id, token}} de dispositivos emparejados (por defecto simulators/devices.local.json)",
+    )
     args = parser.parse_args()
     asyncio.run(main_async(args))
 
