@@ -1,3 +1,5 @@
+// Punto de entrada de CunaServer: configura API REST (:5080), servidor TCP (:9000),
+// repositorios (PostgREST o memoria en local) y servicios en segundo plano.
 using CunaServer.Api;
 using CunaServer.Data;
 using CunaServer.Services;

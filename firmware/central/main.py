@@ -1,16 +1,7 @@
 """
-Unidad Central (Pico W #1) — MicroPython.
-
-RF07/RF08  T/H fuera de rango >= 10 s sostenidos -> event `env_out_of_range` (una vez por episodio).
-RF09       Luz nocturna PWM >= 1 kHz con rampa no bloqueante (por defecto 1.5 s).
-RF05       Botón táctil TTP223 -> event `button_attention`.
-IU-03      LED RGB según `status_led` / `mode_set` (verde monitoreo, amarillo atención, rojo alarma).
-RF04       `alarm_set` -> tono de alarma local (prioridad sobre todo lo demás).
-RF12/D12   `song_play` -> secuencia de notas [{freq_hz, ms}] enviada por el servidor.
-RF11/D5    `audio_chunk` -> PCM u8 reproducido por PWM con un temporizador a `rate` Hz.
-Telemetría por minuto: `temp_c`, `hum_pct` (promedios).
-
-En la Pico: copiar `common/`, este archivo como `main.py` y `secrets.py` a la raíz.
+Nodo central (Pico W #1) en MicroPython.
+Maneja sensores T/H, luz PWM, LED RGB, botón táctil, melodías y audio PCM.
+Para subir a la placa: copia `common/`, este archivo como `main.py` y `secrets.py`.
 """
 
 from common.device_runtime import DeviceNode, run
