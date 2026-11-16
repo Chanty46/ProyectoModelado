@@ -10,9 +10,9 @@
 
 ## 1. Resumen Ejecutivo
 
-El proyecto **Cuna Inteligente** es un ecosistema ciberfísico distribuido diseñado para la monitorización en tiempo real del bienestar, seguridad perimetral, microclima ambiental y nutrición del lactante. El sistema fue desarrollado cumpliendo la Especificación de Requisitos de Software (ERS v1.0) y las decisiones técnicas consensuadas en `docs/PROJECT_CONTEXT.md`.
+**Cuna Inteligente** es un sistema de supervisión perimetral, microclima y nutrición infantil desarrollado siguiendo el [ERS v1.0](source/ERS_v1_0.md) y los acuerdos registrados en [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).
 
-El sistema integra de forma armónica hardware embebido, servidores de red concurrentes, bases de datos relacionales con control de acceso granular y una interfaz web moderna y accesible:
+El proyecto conecta cinco nodos embebidos en Raspberry Pi Pico W, un servidor central en .NET 8, base de datos en Supabase con aislamiento por familia y una aplicación web en React:
 
 ```
 +-----------------------------------------------------------------------------------------+
@@ -251,8 +251,8 @@ El recorrido guiado para la presentación frente al tribunal examinador se encue
 
 ## 7. Conclusiones
 
-El proyecto **Cuna Inteligente** cumple con todos los objetivos planteados en los hitos M0 a M11:
-1. **Robusto**: Implementa tolerancia a fallos, búfer offline de 48 horas en MicroPython y reconexión automática sin pérdida de datos.
-2. **Seguro**: Control de acceso granular por RLS, validación estricta de entradas y neutralización de fugas de información sensible.
-3. **Mantenible y Verificable**: Cobertura completa de pruebas unitarias, de integración y extremo a extremo ejecutables localmente con feedback inmediato.
-4. **Listo para Entrega**: Repositorio limpio, Pull Requests organizados linealmente y documentación exhaustiva.
+El sistema cubre los objetivos definidos entre los hitos M0 y M11:
+1. **Tolerancia a desconexiones**: los nodos mantienen un búfer local de 48 horas en MicroPython y vacían datos al reconectarse al servidor TCP.
+2. **Aislamiento y seguridad**: todas las tablas tienen RLS activado, los tokens se guardan como hashes SHA-256 y las entradas se validan en servidor.
+3. **Pruebas y mantenimiento**: el repositorio queda modularizado por capa y cuenta con 114 pruebas automáticas ejecutables en local.
+4. **Listo para revisión**: cambios integrados por Pull Request con documentación, guion de demo y guías visuales actualizadas.
