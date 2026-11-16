@@ -71,6 +71,7 @@ export function downsampleFloatToPcm8(
     return new Uint8Array(0);
   }
 
+  // Promedio por ventana (boxcar) para evitar aliasing básico al reducir de 44.1/48 kHz a 8 kHz
   const ratio = Math.max(1, inputSampleRate / targetSampleRate);
   const outputLength = Math.min(maxSamples, Math.max(1, Math.floor(input.length / ratio)));
   const pcm = new Uint8Array(outputLength);
@@ -86,6 +87,7 @@ export function downsampleFloatToPcm8(
     }
     const avg = count > 0 ? sum / count : input[Math.min(startIdx, input.length - 1)];
     const clamped = Math.max(-1, Math.min(1, avg));
+    // Cuantización sin signo centrada en 128 con amplitud acotada (110) para proteger el rango <= 65 dBA
     pcm[i] = Math.round(128 + clamped * 110);
   }
 

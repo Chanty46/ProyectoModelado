@@ -83,6 +83,7 @@ export function IntercomPushToTalk({ accessToken, cunaId }: IntercomPushToTalkPr
       const sampleRateHz = 8000;
       const sampleCount = 800; // 100 ms por bloque (< 1280 muestras)
       const pcm = new Uint8Array(sampleCount);
+      // Tono senoidal 440 Hz cuantizado a PCM unsigned 8-bit (offset 128, amplitud 60)
       for (let i = 0; i < sampleCount; i++) {
         const wave = Math.sin((2 * Math.PI * 440 * i) / sampleRateHz);
         pcm[i] = Math.round(128 + wave * 60);
