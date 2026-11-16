@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using CunaServer.Data;
 using CunaServer.Tcp;
@@ -8,6 +6,10 @@ using CunaServer.Telegram;
 
 namespace CunaServer.Services;
 
+/// <summary>
+/// Servicio de aplicación para alimentación del biberón inteligente (RF16, RF17, RF37),
+/// historial de sueño (RF30), exportación CSV/PDF (RF32) y juguetes/móvil colgante (RF12, RF13, RF33, RF36).
+/// </summary>
 public sealed class FeedingHistoryAndToysService
 {
     public const decimal MilkDensityGramsPerMl = 1.03m;
@@ -41,9 +43,15 @@ public sealed class FeedingHistoryAndToysService
         return Math.Round(diff / MilkDensityGramsPerMl, 1, MidpointRounding.AwayFromZero);
     }
 
+    /// <summary>
+    /// RF16: Indica si la temperatura del biberón está fuera de la ventana segura (35.0–38.5 °C).
+    /// </summary>
     public static bool IsFoodTemperatureOutOfRange(decimal? tempC)
         => tempC.HasValue && (tempC.Value < SafeFoodTempMinC || tempC.Value > SafeFoodTempMaxC);
 
+    /// <summary>
+    /// RF37: Inicia una sesión de alimentación validando masa inicial mínima (20 g) y alertando si la temperatura es insegura.
+    /// </summary>
     public async Task<ServiceResult<FeedingSessionRecord>> StartFeedingSessionAsync(
         AuthenticatedIdentity identity,
         StartFeedingSessionRequest request,
@@ -86,17 +94,7 @@ public sealed class FeedingHistoryAndToysService
 
         if (tempAlert && baby.CunaId.HasValue)
         {
-            var alertRecord = new EventAlertRecord(
-                Guid.NewGuid(),
-                baby.CunaId.Value,
-                Guid.Empty,
-                "food_temp_out_of_range",
-                "advertencia",
-                $"Alerta térmica de alimento (RF16): temperatura {request.TempC!.Value:F1} °C fuera del rango seguro (35.0–38.5 °C).",
-                JsonSerializer.Serialize(new { temp_c = request.TempC.Value, session_id = session.Id }),
-                now);
-            await _deviceRepo.SaveEventAlertAsync(alertRecord, ct);
-            await _telegramService.DispatchAlertForCribAsync(baby.CunaId.Value, alertRecord, ct);
+            await DispatchFoodTemperatureAlertAsync(baby.CunaId.Value, session.Id, request.TempC!.Value, now, ct);
         }
 
         await _deviceRepo.LogCaregiverActionAsync(new CaregiverAuditLogEntry(
@@ -117,6 +115,9 @@ public sealed class FeedingHistoryAndToysService
         return ServiceResult<FeedingSessionRecord>.Created(session);
     }
 
+    /// <summary>
+    /// RF17 + RF18: Cierra la toma, calcula mililitros consumidos y reinicia el temporizador del recordatorio dinámico.
+    /// </summary>
     public async Task<ServiceResult<FeedingSessionRecord>> FinishFeedingSessionAsync(
         AuthenticatedIdentity identity,
         Guid sessionId,
@@ -246,25 +247,23 @@ public sealed class FeedingHistoryAndToysService
             return ServiceResult<SleepSessionRecord>.BadRequest("El número de interrupciones no puede ser negativo.");
         }
 
-        if (request.CunaId != Guid.Empty)
-        {
-            var crib = await _deviceRepo.GetCribByIdAsync(request.CunaId, ct);
-            if (crib is null || crib.FamilyId != membership.FamilyId)
-            {
-                await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                    membership.FamilyId,
-                    identity.UserId,
-                    null,
-                    "acceso_denegado_403",
-                    clientIp,
-                    $"cuna_ajena:registrar_sueno_rf30:{request.CunaId}",
-                    DateTimeOffset.UtcNow), ct);
-                return ServiceResult<SleepSessionRecord>.Forbidden("Acceso denegado: la cuna no pertenece a tu familia.");
-            }
-        }
-        else
+        if (request.CunaId == Guid.Empty)
         {
             return ServiceResult<SleepSessionRecord>.BadRequest("Se requiere el identificador válido de la cuna.");
+        }
+
+        var crib = await _deviceRepo.GetCribByIdAsync(request.CunaId, ct);
+        if (crib is null || crib.FamilyId != membership.FamilyId)
+        {
+            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
+                membership.FamilyId,
+                identity.UserId,
+                null,
+                "acceso_denegado_403",
+                clientIp,
+                $"cuna_ajena:registrar_sueno_rf30:{request.CunaId}",
+                DateTimeOffset.UtcNow), ct);
+            return ServiceResult<SleepSessionRecord>.Forbidden("Acceso denegado: la cuna no pertenece a tu familia.");
         }
 
         var created = await _deviceRepo.CreateSleepSessionAsync(
@@ -351,30 +350,16 @@ public sealed class FeedingHistoryAndToysService
         var feedingTask = _deviceRepo.ListFeedingSessionsByBabyAsync(bebeId, ct);
         await Task.WhenAll(sleepTask, feedingTask);
 
-        var sleepAll = await sleepTask;
-        var feedingAll = await feedingTask;
-
-        var sleepFiltered = FilterByDateRange(sleepAll, s => s.Inicio, request.Desde, request.Hasta);
-        var feedingFiltered = FilterByDateRange(feedingAll, f => f.Inicio, request.Desde, request.Hasta);
-
-        byte[] fileBytes;
-        string contentType;
-        string extension;
-
-        if (formato == "csv")
-        {
-            fileBytes = BuildCsvBytes(baby, sleepFiltered, feedingFiltered);
-            contentType = "text/csv; charset=utf-8";
-            extension = "csv";
-        }
-        else
-        {
-            fileBytes = BuildPdfBytes(baby, sleepFiltered, feedingFiltered);
-            contentType = "application/pdf";
-            extension = "pdf";
-        }
+        var sleepFiltered = FilterByDateRange(await sleepTask, s => s.Inicio, request.Desde, request.Hasta);
+        var feedingFiltered = FilterByDateRange(await feedingTask, f => f.Inicio, request.Desde, request.Hasta);
 
         var now = DateTimeOffset.UtcNow;
+        var (fileBytes, contentType, fileName) = HistoryReportExporter.BuildReport(
+            formato,
+            baby,
+            sleepFiltered,
+            feedingFiltered,
+            now);
 
         await _deviceRepo.LogCaregiverActionAsync(new CaregiverAuditLogEntry(
             membership.FamilyId,
@@ -400,8 +385,6 @@ public sealed class FeedingHistoryAndToysService
             now), ct);
 
         sw.Stop();
-        var fileName = $"historial_{SanitizeFileName(baby.Nombre)}_{now:yyyyMMdd}.{extension}";
-
         return ServiceResult<ExportHistoryResponse>.Ok(new ExportHistoryResponse(
             fileName,
             contentType,
@@ -593,6 +576,26 @@ public sealed class FeedingHistoryAndToysService
             latestBottleTelemetry?.TempBiberonC));
     }
 
+    private async Task DispatchFoodTemperatureAlertAsync(
+        Guid cunaId,
+        Guid sessionId,
+        decimal tempC,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var alertRecord = new EventAlertRecord(
+            Guid.NewGuid(),
+            cunaId,
+            Guid.Empty,
+            "food_temp_out_of_range",
+            "advertencia",
+            $"Alerta térmica de alimento (RF16): temperatura {tempC:F1} °C fuera del rango seguro (35.0–38.5 °C).",
+            JsonSerializer.Serialize(new { temp_c = tempC, session_id = sessionId }),
+            now);
+        await _deviceRepo.SaveEventAlertAsync(alertRecord, ct);
+        await _telegramService.DispatchAlertForCribAsync(cunaId, alertRecord, ct);
+    }
+
     private static IReadOnlyList<T> FilterByDateRange<T>(
         IReadOnlyList<T> items,
         Func<T, DateTimeOffset> getTimestamp,
@@ -614,427 +617,6 @@ public sealed class FeedingHistoryAndToysService
                 return true;
             })
             .ToList();
-    }
-
-    private static byte[] BuildCsvBytes(
-        BabyRecord baby,
-        IReadOnlyList<SleepSessionRecord> sleepSessions,
-        IReadOnlyList<FeedingSessionRecord> feedingSessions)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("Categoria,FechaInicio,FechaFin,Detalle1,Detalle2,Detalle3,Alerta");
-
-        foreach (var s in sleepSessions)
-        {
-            sb.AppendLine(string.Create(
-                CultureInfo.InvariantCulture,
-                $"Sueno ({s.Tipo}),{s.Inicio:O},{s.Fin?.ToString("O") ?? ""},mov_prom={s.MovimientoPromedio ?? 0:F3},interrupciones={s.Interrupciones},bebe={EscapeCsv(baby.Nombre)},NO"));
-        }
-
-        foreach (var f in feedingSessions)
-        {
-            sb.AppendLine(string.Create(
-                CultureInfo.InvariantCulture,
-                $"Alimentacion,{f.Inicio:O},{f.Fin?.ToString("O") ?? ""},m_inicial_g={f.MasaInicialG:F1},m_final_g={f.MasaFinalG ?? 0:F1},ml={f.MlConsumidos ?? 0:F1},{(f.AlertaTemperatura ? "SI_TEMP" : "NO")}"));
-        }
-
-        return Encoding.UTF8.GetBytes(sb.ToString());
-    }
-
-    private static byte[] BuildPdfBytes(
-        BabyRecord baby,
-        IReadOnlyList<SleepSessionRecord> sleepSessions,
-        IReadOnlyList<FeedingSessionRecord> feedingSessions)
-    {
-        const int maxPdfCharsPerLine = 92;
-        const float maxPdfWidthPt = 500f;
-        const int maxBabyHeaderLines = 8;
-
-        var allBodyLines = new List<string>();
-        foreach (var f in feedingSessions)
-        {
-            var alertaStr = f.AlertaTemperatura ? " [ALERTA TEMP]" : "";
-            var finalStr = f.MasaFinalG.HasValue
-                ? string.Create(CultureInfo.InvariantCulture, $"{f.MasaFinalG.Value:F1}g")
-                : "N/D";
-            var volStr = f.MlConsumidos.HasValue
-                ? string.Create(CultureInfo.InvariantCulture, $"{f.MlConsumidos.Value:F1} ml")
-                : "N/D";
-            var tempStr = f.TempC.HasValue
-                ? string.Create(CultureInfo.InvariantCulture, $"{f.TempC.Value:F1} °C")
-                : "N/D";
-            var rawLine = string.Create(
-                CultureInfo.InvariantCulture,
-                $"[Toma] {f.Inicio:yyyy-MM-dd HH:mm} | Inicial: {f.MasaInicialG:F1}g | Final: {finalStr} | Vol: {volStr} | T: {tempStr}{alertaStr}");
-            allBodyLines.AddRange(WrapPdfLine(EscapePdfText(rawLine), maxPdfCharsPerLine, maxPdfWidthPt));
-        }
-
-        foreach (var s in sleepSessions)
-        {
-            var movStr = s.MovimientoPromedio.HasValue
-                ? string.Create(CultureInfo.InvariantCulture, $"{s.MovimientoPromedio.Value:F3} kg/m")
-                : "N/D";
-            var rawLine = string.Create(
-                CultureInfo.InvariantCulture,
-                $"[Sueño {s.Tipo}] {s.Inicio:yyyy-MM-dd HH:mm} | Mov prom: {movStr} | Interrupciones: {s.Interrupciones}");
-            allBodyLines.AddRange(WrapPdfLine(EscapePdfText(rawLine), maxPdfCharsPerLine, maxPdfWidthPt));
-        }
-
-        if (allBodyLines.Count == 0)
-        {
-            allBodyLines.Add("Sin sesiones registradas para este perfil.");
-        }
-
-        var generatedAt = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-        var babyNameEscaped = EscapePdfText(baby.Nombre);
-        var probeFullTitle = $"Reporte Histórico Cuna Inteligente (RF32) - Bebé: {babyNameEscaped} (Pág. 999/999)";
-        var singleLineHeaderFits = probeFullTitle.Length <= maxPdfCharsPerLine
-            && EstimateHelveticaWidthPt(probeFullTitle) <= maxPdfWidthPt;
-
-        var wrappedBabyHeaderLines = singleLineHeaderFits
-            ? Array.Empty<string>()
-            : BoundHeaderLines(
-                WrapPdfLine($"Bebé: {babyNameEscaped}", maxPdfCharsPerLine, maxPdfWidthPt),
-                maxBabyHeaderLines);
-
-        var headerLineCountEstimate = (singleLineHeaderFits ? 1 : 1 + wrappedBabyHeaderLines.Count) + 3;
-        var availableBodyHeightPt = 760 - (headerLineCountEstimate * 16) - 8 - 50;
-        var linesPerPage = Math.Max(1, Math.Min(38, (availableBodyHeightPt / 16) + 1));
-
-        var pageChunks = new List<List<string>>();
-        for (var i = 0; i < allBodyLines.Count; i += linesPerPage)
-        {
-            pageChunks.Add(allBodyLines.GetRange(i, Math.Min(linesPerPage, allBodyLines.Count - i)));
-        }
-
-        var totalPages = pageChunks.Count;
-
-        // Objetos PDF: 1=Catalog, 2=Pages, 3=Font Helvetica, luego por página p: Page(4+p*2) y Contents(5+p*2)
-        var pageObjIds = new int[totalPages];
-        var contentStreams = new byte[totalPages][];
-        for (var p = 0; p < totalPages; p++)
-        {
-            pageObjIds[p] = 4 + (p * 2);
-            var cb = new StringBuilder();
-            cb.Append("BT\n/F1 10 Tf\n");
-
-            var y = 760;
-            var headerLines = new List<string>();
-            if (singleLineHeaderFits)
-            {
-                headerLines.Add($"Reporte Histórico Cuna Inteligente (RF32) - Bebé: {babyNameEscaped} (Pág. {p + 1}/{totalPages})");
-            }
-            else
-            {
-                headerLines.Add($"Reporte Histórico Cuna Inteligente (RF32) - Pág. {p + 1}/{totalPages}");
-                headerLines.AddRange(wrappedBabyHeaderLines);
-            }
-            headerLines.Add(EscapePdfText($"Fecha de nacimiento: {baby.FechaNacimiento:yyyy-MM-dd} | Generado: {generatedAt} UTC"));
-            headerLines.Add(EscapePdfText($"Sesiones de sueño: {sleepSessions.Count} | Sesiones de alimentación: {feedingSessions.Count}"));
-            headerLines.Add("------------------------------------------------------------------------");
-
-            foreach (var h in headerLines)
-            {
-                cb.Append($"1 0 0 1 50 {y} Tm ({h}) Tj\n");
-                y -= 16;
-            }
-
-            // Separación vertical adicional tras el encabezado antes de la primera fila de datos
-            y -= 8;
-
-            foreach (var row in pageChunks[p])
-            {
-                cb.Append($"1 0 0 1 50 {y} Tm ({row}) Tj\n");
-                y -= 16;
-            }
-
-            cb.Append("ET\n");
-            contentStreams[p] = Encoding.Latin1.GetBytes(cb.ToString());
-        }
-
-        var totalObjects = 3 + (totalPages * 2);
-        var offsets = new long[totalObjects + 1];
-
-        using var ms = new MemoryStream();
-        void WriteAscii(string text)
-        {
-            var bytes = Encoding.Latin1.GetBytes(text);
-            ms.Write(bytes, 0, bytes.Length);
-        }
-
-        WriteAscii("%PDF-1.4\n");
-
-        offsets[1] = ms.Position;
-        WriteAscii("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
-
-        offsets[2] = ms.Position;
-        var kidsList = string.Join(" ", pageObjIds.Select(id => $"{id} 0 R"));
-        WriteAscii($"2 0 obj\n<< /Type /Pages /Kids [{kidsList}] /Count {totalPages} >>\nendobj\n");
-
-        offsets[3] = ms.Position;
-        WriteAscii("3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n");
-
-        for (var p = 0; p < totalPages; p++)
-        {
-            var pageId = 4 + (p * 2);
-            var contentId = 5 + (p * 2);
-
-            offsets[pageId] = ms.Position;
-            WriteAscii(
-                $"{pageId} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {contentId} 0 R /Resources << /Font << /F1 3 0 R >> >> >>\nendobj\n");
-
-            offsets[contentId] = ms.Position;
-            WriteAscii($"{contentId} 0 obj\n<< /Length {contentStreams[p].Length} >>\nstream\n");
-            ms.Write(contentStreams[p], 0, contentStreams[p].Length);
-            WriteAscii("endstream\nendobj\n");
-        }
-
-        var xrefOffset = ms.Position;
-        WriteAscii($"xref\n0 {totalObjects + 1}\n");
-        WriteAscii("0000000000 65535 f \n");
-        for (var objId = 1; objId <= totalObjects; objId++)
-        {
-            WriteAscii($"{offsets[objId]:D10} 00000 n \n");
-        }
-
-        WriteAscii($"trailer\n<< /Size {totalObjects + 1} /Root 1 0 R >>\nstartxref\n{xrefOffset}\n%%EOF\n");
-        return ms.ToArray();
-    }
-
-    private static string EscapeCsv(string input)
-    {
-        if (string.IsNullOrEmpty(input))
-        {
-            return "\"\"";
-        }
-
-        var sanitized = input.Replace("\"", "\"\"").Replace("\r", " ").Replace("\n", " ");
-        if (sanitized.Length > 0 && (sanitized[0] is '=' or '+' or '-' or '@' or '\t'))
-        {
-            sanitized = "'" + sanitized;
-        }
-
-        return $"\"{sanitized}\"";
-    }
-
-    private static string EscapePdfText(string input)
-    {
-        if (string.IsNullOrEmpty(input))
-        {
-            return string.Empty;
-        }
-
-        var sb = new StringBuilder(input.Length);
-        foreach (var ch in input)
-        {
-            switch (ch)
-            {
-                case '(':
-                    sb.Append('[');
-                    break;
-                case ')':
-                    sb.Append(']');
-                    break;
-                case '\\':
-                    sb.Append('/');
-                    break;
-                case '\r':
-                case '\n':
-                case '\t':
-                    sb.Append(' ');
-                    break;
-                default:
-                    if ((ch >= 0x20 && ch <= 0x7E) || (ch >= 0xA0 && ch <= 0xFF))
-                    {
-                        sb.Append(ch);
-                    }
-                    else if (ch >= 0x7F)
-                    {
-                        sb.Append('?');
-                    }
-                    break;
-            }
-        }
-        return sb.ToString();
-    }
-
-    private static IReadOnlyList<string> BoundHeaderLines(IReadOnlyList<string> lines, int maxLines)
-    {
-        if (lines.Count <= maxLines)
-        {
-            return lines;
-        }
-
-        var bounded = new List<string>(maxLines);
-        for (var i = 0; i < maxLines; i++)
-        {
-            bounded.Add(lines[i]);
-        }
-
-        var last = bounded[maxLines - 1];
-        bounded[maxLines - 1] = last.Length > 3 ? last[..^3].TrimEnd() + "..." : "...";
-        return bounded;
-    }
-
-    private static IReadOnlyList<string> WrapPdfLine(string escapedText, int maxChars, float maxWidthPt)
-    {
-        if (string.IsNullOrEmpty(escapedText))
-        {
-            return new[] { string.Empty };
-        }
-
-        if (escapedText.Length <= maxChars && EstimateHelveticaWidthPt(escapedText) <= maxWidthPt)
-        {
-            return new[] { escapedText };
-        }
-
-        var lines = new List<string>();
-        var remaining = escapedText.AsSpan();
-        var isFirst = true;
-
-        while (remaining.Length > 0)
-        {
-            var prefix = isFirst ? string.Empty : "  ";
-            var prefixWidth = EstimateHelveticaWidthPt(prefix);
-            var charLimit = Math.Max(8, maxChars - prefix.Length);
-            var widthLimit = Math.Max(80f, maxWidthPt - prefixWidth);
-
-            var fitCount = 0;
-            var accWidth = 0f;
-            while (fitCount < remaining.Length && fitCount < charLimit)
-            {
-                var charWidth = GetHelveticaCharWidthPt(remaining[fitCount]);
-                if (fitCount > 0 && accWidth + charWidth > widthLimit)
-                {
-                    break;
-                }
-                accWidth += charWidth;
-                fitCount++;
-            }
-
-            if (fitCount == 0)
-            {
-                fitCount = 1;
-            }
-
-            if (fitCount >= remaining.Length)
-            {
-                lines.Add(prefix + remaining.ToString());
-                break;
-            }
-
-            var slice = remaining[..fitCount];
-            var breakIdx = slice.LastIndexOf(' ');
-            if (breakIdx < fitCount / 3 || breakIdx <= 0)
-            {
-                breakIdx = fitCount;
-            }
-
-            lines.Add(prefix + remaining[..breakIdx].TrimEnd().ToString());
-            remaining = remaining[breakIdx..].TrimStart();
-            isFirst = false;
-        }
-
-        return lines;
-    }
-
-    private static float EstimateHelveticaWidthPt(string text, float fontSize = 10f)
-    {
-        var total = 0f;
-        foreach (var ch in text)
-        {
-            total += GetHelveticaCharWidthPt(ch, fontSize);
-        }
-        return total;
-    }
-
-    private static float GetHelveticaCharWidthPt(char ch, float fontSize = 10f)
-    {
-        var thousandths = ch switch
-        {
-            ' ' => 278,
-            '!' => 278,
-            '"' => 355,
-            '#' or '$' => 556,
-            '%' => 889,
-            '&' => 667,
-            '\'' => 191,
-            '(' or ')' => 333,
-            '*' => 389,
-            '+' => 584,
-            ',' => 278,
-            '-' => 333,
-            '.' or '/' => 278,
-            >= '0' and <= '9' => 556,
-            ':' or ';' => 278,
-            '<' or '=' or '>' => 584,
-            '?' => 556,
-            '@' => 1015,
-            'A' or 'B' => 667,
-            'C' or 'D' => 722,
-            'E' => 667,
-            'F' => 611,
-            'G' => 778,
-            'H' => 722,
-            'I' => 278,
-            'J' => 500,
-            'K' => 667,
-            'L' => 556,
-            'M' => 833,
-            'N' => 722,
-            'O' => 778,
-            'P' => 667,
-            'Q' => 778,
-            'R' => 722,
-            'S' => 667,
-            'T' => 611,
-            'U' => 722,
-            'V' => 667,
-            'W' => 944,
-            'X' or 'Y' => 667,
-            'Z' => 611,
-            '[' or ']' => 278,
-            '_' => 556,
-            '`' => 333,
-            'a' or 'b' => 556,
-            'c' => 500,
-            'd' or 'e' => 556,
-            'f' => 278,
-            'g' or 'h' => 556,
-            'i' or 'j' => 222,
-            'k' => 500,
-            'l' => 222,
-            'm' => 833,
-            'n' or 'o' or 'p' or 'q' => 556,
-            'r' => 333,
-            's' => 500,
-            't' => 278,
-            'u' => 556,
-            'v' => 500,
-            'w' => 722,
-            'x' or 'y' or 'z' => 500,
-            '{' or '}' => 334,
-            '|' => 260,
-            '~' => 584,
-            '°' => 400,
-            '¡' => 333,
-            '¿' => 611,
-            'Á' or 'É' or 'Ü' => 667,
-            'Í' => 278,
-            'Ó' => 778,
-            'Ú' or 'Ñ' => 722,
-            'á' or 'é' or 'ó' or 'ú' or 'ñ' or 'ü' => 556,
-            'í' => 278,
-            _ => 778
-        };
-
-        return thousandths * fontSize / 1000f;
-    }
-
-    private static string SanitizeFileName(string input)
-    {
-        var chars = input.Where(char.IsLetterOrDigit).ToArray();
-        return chars.Length == 0 ? "bebe" : new string(chars).ToLowerInvariant();
     }
 
     private Task<(UserMembership? Membership, BabyRecord? Baby, string? ForbiddenMessage)> VerifyBabyAccessAsync(

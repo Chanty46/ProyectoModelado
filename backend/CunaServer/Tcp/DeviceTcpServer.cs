@@ -1,22 +1,34 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
 using CunaServer.Data;
 
 namespace CunaServer.Tcp;
 
+/// <summary>
+/// Opciones de configuración y límites de seguridad del servidor TCP local para nodos Pico W.
+/// </summary>
 public sealed class DeviceTcpServerOptions
 {
     public IPAddress BindAddress { get; set; } = IPAddress.Loopback;
     public int Port { get; set; } = 9000;
+
+    /// <summary>
+    /// Ventana máxima (5 s por defecto) para completar el handshake <c>hello</c>; evita que
+    /// clientes lentos u ociosos agoten descriptores de socket antes de autenticarse.
+    /// </summary>
     public TimeSpan HelloTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
     public TimeSpan AckTimeout { get; set; } = TimeSpan.FromSeconds(2);
     public TimeSpan IpBlockDuration { get; set; } = TimeSpan.FromMinutes(2);
     public int MaxFailedHelloAttempts { get; set; } = 3;
 }
 
+/// <summary>
+/// Servidor TCP en segundo plano que atiende conexiones persistentes de las 5 Raspberry Pi Pico W
+/// en red local usando tramas JSON delimitadas por <c>\n</c> (máximo 4 KB por línea).
+/// </summary>
 public sealed class DeviceTcpServer : BackgroundService
 {
     private readonly IDeviceTelemetryRepository _repository;
@@ -51,14 +63,19 @@ public sealed class DeviceTcpServer : BackgroundService
 
     public bool DisconnectDevice(string deviceId)
     {
-        if (_activeSessions.TryRemove(deviceId, out var session))
+        if (!_activeSessions.TryRemove(deviceId, out var session))
         {
-            session.Close();
-            return true;
+            return false;
         }
-        return false;
+
+        session.Close();
+        return true;
     }
 
+    /// <summary>
+    /// Envía un comando JSON al dispositivo conectado; si <paramref name="requireAck"/> es verdadero,
+    /// espera confirmación (<c>ack</c>) hasta <c>AckTimeout</c> con hasta 3 reintentos.
+    /// </summary>
     public async Task<bool> SendCommandAsync(
         string deviceId,
         string cmd,
@@ -77,23 +94,14 @@ public sealed class DeviceTcpServer : BackgroundService
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             var ackTask = requireAck ? session.RegisterPendingAck(cmdId) : Task.FromResult(true);
-
-            var envelope = new
+            var envelope = BuildEnvelope(session, "command", DateTimeOffset.UtcNow, new
             {
-                v = 1,
-                t = "command",
-                seq = session.NextOutboundSeq(),
-                ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                d = new
-                {
-                    id = cmdId,
-                    cmd,
-                    @params = parameters
-                }
-            };
+                id = cmdId,
+                cmd,
+                @params = parameters
+            });
 
-            var sent = await session.TrySendJsonLineAsync(envelope, ct);
-            if (!sent)
+            if (!await session.TrySendJsonLineAsync(envelope, ct))
             {
                 session.CancelPendingAck(cmdId);
                 return false;
@@ -104,19 +112,9 @@ public sealed class DeviceTcpServer : BackgroundService
                 return true;
             }
 
-            try
+            if (await WaitForCommandAckAsync(session, cmdId, ackTask, ct))
             {
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeoutCts.CancelAfter(_options.AckTimeout);
-                var ok = await ackTask.WaitAsync(timeoutCts.Token);
-                if (ok)
-                {
-                    return true;
-                }
-            }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                session.CancelPendingAck(cmdId);
+                return true;
             }
         }
 
@@ -149,21 +147,45 @@ public sealed class DeviceTcpServer : BackgroundService
         }
         finally
         {
-            foreach (var session in _activeSessions.Values)
-            {
-                session.Close();
-            }
-            _activeSessions.Clear();
-            _listener.Stop();
+            await ShutdownListenerAndSessionsAsync(clientTasks);
+        }
+    }
 
-            try
-            {
-                await Task.WhenAll(clientTasks);
-            }
-            catch
-            {
-                // Ignorar excepciones de cierre
-            }
+    private async Task<bool> WaitForCommandAckAsync(
+        ConnectedDeviceSession session,
+        string cmdId,
+        Task<bool> ackTask,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(_options.AckTimeout);
+            return await ackTask.WaitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            session.CancelPendingAck(cmdId);
+            return false;
+        }
+    }
+
+    private async Task ShutdownListenerAndSessionsAsync(List<Task> clientTasks)
+    {
+        foreach (var session in _activeSessions.Values)
+        {
+            session.Close();
+        }
+        _activeSessions.Clear();
+        _listener?.Stop();
+
+        try
+        {
+            await Task.WhenAll(clientTasks);
+        }
+        catch
+        {
+            // Ignorar excepciones de cierre
         }
     }
 
@@ -181,237 +203,17 @@ public sealed class DeviceTcpServer : BackgroundService
             await using var stream = client.GetStream();
             using var lineReader = new TcpLineReader(stream);
             var session = new ConnectedDeviceSession(client, stream);
-
             RegisteredDevice? authenticatedDevice = null;
-            var failedHelloCountOnConnection = 0;
 
             try
             {
-                // 1. Fase de autenticación: debe recibir hello válido antes de HelloTimeout
-                using var helloTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                helloTimeoutCts.CancelAfter(_options.HelloTimeout);
-
-                while (authenticatedDevice is null)
+                authenticatedDevice = await AuthenticateDeviceAsync(lineReader, session, remoteIp, ct);
+                if (authenticatedDevice is null)
                 {
-                    string? rawLine;
-                    bool exceeded;
-                    bool eos;
-                    try
-                    {
-                        (rawLine, exceeded, eos) = await lineReader.ReadLineAsync(helloTimeoutCts.Token);
-                    }
-                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-                    {
-                        await SendErrorAsync(session, "hello_timeout", "Tiempo de espera de hello (5 s) agotado.", ct);
-                        return;
-                    }
-
-                    if (eos)
-                    {
-                        return;
-                    }
-
-                    if (exceeded)
-                    {
-                        await RecordValidationFailureAsync(null, null, remoteIp, "linea_excede_4kb", ct);
-                        await SendErrorAsync(session, "line_too_long", "La línea supera el límite de 4 KB.", ct);
-                        return;
-                    }
-
-                    if (!TcpProtocolParser.TryParseEnvelope(rawLine!, out var env, out var errCode, out var errMsg))
-                    {
-                        await RecordValidationFailureAsync(null, null, remoteIp, $"sobre_invalido:{errCode}", ct);
-                        var stop = errCode == "unsupported_version";
-                        failedHelloCountOnConnection++;
-                        if (stop)
-                        {
-                            await SendErrorAsync(session, errCode ?? "invalid_envelope", errMsg ?? "Mensaje inválido.", ct);
-                            return;
-                        }
-
-                        if (await HandleHelloFailureAsync(session, remoteIp, failedHelloCountOnConnection, errCode ?? "invalid_envelope", errMsg ?? "Mensaje inválido.", ct))
-                        {
-                            return;
-                        }
-                        continue;
-                    }
-
-                    if (env!.T != "hello")
-                    {
-                        failedHelloCountOnConnection++;
-                        if (await HandleHelloFailureAsync(session, remoteIp, failedHelloCountOnConnection, "hello_required", "El primer mensaje debe ser 'hello'.", ct))
-                        {
-                            return;
-                        }
-                        continue;
-                    }
-
-                    if (!TcpProtocolParser.TryValidateHello(
-                            env.D,
-                            out var deviceId,
-                            out var deviceType,
-                            out var fwVersion,
-                            out var rawToken,
-                            out var helloErr))
-                    {
-                        failedHelloCountOnConnection++;
-                        if (await HandleHelloFailureAsync(session, remoteIp, failedHelloCountOnConnection, "invalid_hello", helloErr ?? "Datos de hello inválidos.", ct))
-                        {
-                            return;
-                        }
-                        continue;
-                    }
-
-                    var candidateDevice = await _repository.GetDeviceByDeviceIdAsync(deviceId, ct);
-                    var tokenHash = CryptoTokenHelper.ComputeSha256Hex(rawToken);
-                    var isValidDevice =
-                        candidateDevice is not null &&
-                        string.Equals(candidateDevice.Tipo, deviceType, StringComparison.Ordinal) &&
-                        candidateDevice.Estado is not ("revocado" or "sin_dueno") &&
-                        CryptoTokenHelper.ConstantTimeHashEquals(candidateDevice.HashToken, tokenHash);
-
-                    if (!isValidDevice)
-                    {
-                        failedHelloCountOnConnection++;
-                        await _repository.LogSecurityEventAsync(new SecurityAuditEntry(
-                            candidateDevice?.FamilyId,
-                            null,
-                            candidateDevice?.Id,
-                            "hello_fallido",
-                            remoteIp,
-                            $"device_id={deviceId}",
-                            DateTimeOffset.UtcNow), ct);
-
-                        if (await HandleHelloFailureAsync(session, remoteIp, failedHelloCountOnConnection, "auth_failed", "Autenticación de dispositivo rechazada.", ct))
-                        {
-                            return;
-                        }
-                        continue;
-                    }
-
-                    ClearIpFailures(remoteIp);
-                    authenticatedDevice = candidateDevice!;
-                    session.DeviceId = authenticatedDevice.DeviceId;
-
-                    if (_activeSessions.TryRemove(authenticatedDevice.DeviceId, out var oldSession))
-                    {
-                        oldSession.Close();
-                    }
-                    _activeSessions[authenticatedDevice.DeviceId] = session;
-
-                    var now = DateTimeOffset.UtcNow;
-                    await _repository.RecordHeartbeatAsync(
-                        authenticatedDevice.Id,
-                        authenticatedDevice.CunaId,
-                        authenticatedDevice.Tipo,
-                        authenticatedDevice.BateriaPct,
-                        fwVersion,
-                        now,
-                        ct);
-
-                    var cribConfig = await _repository.GetCribConfigAsync(
-                        authenticatedDevice.CunaId,
-                        authenticatedDevice.FamilyId,
-                        ct);
-
-                    var helloAck = new
-                    {
-                        v = 1,
-                        t = "hello_ack",
-                        seq = session.NextOutboundSeq(),
-                        ts = now.ToUnixTimeSeconds(),
-                        d = new
-                        {
-                            server_time = now.ToUnixTimeSeconds(),
-                            session_ok = true,
-                            last_seq = authenticatedDevice.UltimoSeq,
-                            config = new
-                            {
-                                mass_scale = cribConfig.EscalaMasa,
-                                temp_min = cribConfig.TempMin,
-                                temp_max = cribConfig.TempMax,
-                                hum_min = cribConfig.HumMin,
-                                hum_max = cribConfig.HumMax,
-                                movement_threshold = cribConfig.MovimientoUmbral,
-                                movement_alert_enabled = cribConfig.MovimientoAlertaActiva,
-                                mass_noise_floor = cribConfig.RuidoMasaPiso
-                            }
-                        }
-                    };
-
-                    await session.TrySendJsonLineAsync(helloAck, ct);
+                    return;
                 }
 
-                // 2. Bucle principal de mensajes del dispositivo autenticado
-                while (!ct.IsCancellationRequested)
-                {
-                    var (rawLine, exceeded, eos) = await lineReader.ReadLineAsync(ct);
-                    if (eos)
-                    {
-                        break;
-                    }
-
-                    if (exceeded)
-                    {
-                        await RecordValidationFailureAsync(
-                            authenticatedDevice.FamilyId,
-                            authenticatedDevice.Id,
-                            remoteIp,
-                            "linea_excede_4kb",
-                            ct);
-                        await SendErrorAsync(session, "line_too_long", "La línea supera el límite de 4 KB.", ct);
-                        continue;
-                    }
-
-                    if (!TcpProtocolParser.TryParseEnvelope(rawLine!, out var env, out var errCode, out var errMsg))
-                    {
-                        await RecordValidationFailureAsync(
-                            authenticatedDevice.FamilyId,
-                            authenticatedDevice.Id,
-                            remoteIp,
-                            $"sobre_invalido:{errCode}",
-                            ct);
-                        await SendErrorAsync(session, errCode ?? "invalid_envelope", errMsg ?? "Mensaje inválido.", ct);
-                        if (errCode == "unsupported_version")
-                        {
-                            break;
-                        }
-                        continue;
-                    }
-
-                    var msgTime = env!.Ts.HasValue && env.Ts.Value > 0
-                        ? DateTimeOffset.FromUnixTimeSeconds(env.Ts.Value)
-                        : DateTimeOffset.UtcNow;
-
-                    switch (env.T)
-                    {
-                        case "heartbeat":
-                            await HandleHeartbeatAsync(authenticatedDevice, env.D, remoteIp, ct);
-                            break;
-
-                        case "telemetry":
-                            await HandleTelemetryAsync(session, authenticatedDevice, env.Seq, msgTime, env.D, remoteIp, ct);
-                            break;
-
-                        case "event":
-                            await HandleEventAsync(session, authenticatedDevice, env.Seq, msgTime, env.D, remoteIp, ct);
-                            break;
-
-                        case "ack":
-                            HandleAck(session, env.D);
-                            break;
-
-                        default:
-                            await RecordValidationFailureAsync(
-                                authenticatedDevice.FamilyId,
-                                authenticatedDevice.Id,
-                                remoteIp,
-                                $"tipo_no_soportado:{env.T}",
-                                ct);
-                            await SendErrorAsync(session, "unsupported_type", $"Tipo '{env.T}' no permitido.", ct);
-                            break;
-                    }
-                }
+                await RunAuthenticatedMessageLoopAsync(lineReader, session, authenticatedDevice, remoteIp, ct);
             }
             finally
             {
@@ -422,6 +224,284 @@ public sealed class DeviceTcpServer : BackgroundService
                 }
                 session.Close();
             }
+        }
+    }
+
+    /// <summary>
+    /// Exige un handshake <c>hello</c> válido dentro de <see cref="DeviceTcpServerOptions.HelloTimeout"/> (5 s);
+    /// protege el servidor local contra sockets colgados o fuerza bruta por IP.
+    /// </summary>
+    private async Task<RegisteredDevice?> AuthenticateDeviceAsync(
+        TcpLineReader lineReader,
+        ConnectedDeviceSession session,
+        string remoteIp,
+        CancellationToken ct)
+    {
+        using var helloTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        helloTimeoutCts.CancelAfter(_options.HelloTimeout);
+
+        var failedHelloCount = 0;
+
+        while (true)
+        {
+            string? rawLine;
+            bool exceeded;
+            bool eos;
+            try
+            {
+                (rawLine, exceeded, eos) = await lineReader.ReadLineAsync(helloTimeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                await SendErrorAsync(session, "hello_timeout", "Tiempo de espera de hello (5 s) agotado.", ct);
+                return null;
+            }
+
+            if (eos)
+            {
+                return null;
+            }
+
+            if (exceeded)
+            {
+                await RecordValidationFailureAsync(null, null, remoteIp, "linea_excede_4kb", ct);
+                await SendErrorAsync(session, "line_too_long", "La línea supera el límite de 4 KB.", ct);
+                return null;
+            }
+
+            var (device, shouldClose) = await TryAuthenticateHelloLineAsync(
+                session,
+                rawLine!,
+                remoteIp,
+                ++failedHelloCount,
+                ct);
+
+            if (device is not null)
+            {
+                return device;
+            }
+
+            if (shouldClose)
+            {
+                return null;
+            }
+        }
+    }
+
+    private async Task<(RegisteredDevice? Device, bool ShouldClose)> TryAuthenticateHelloLineAsync(
+        ConnectedDeviceSession session,
+        string rawLine,
+        string remoteIp,
+        int attemptNumber,
+        CancellationToken ct)
+    {
+        if (!TcpProtocolParser.TryParseEnvelope(rawLine, out var env, out var errCode, out var errMsg))
+        {
+            await RecordValidationFailureAsync(null, null, remoteIp, $"sobre_invalido:{errCode}", ct);
+            if (errCode == "unsupported_version")
+            {
+                await SendErrorAsync(session, errCode ?? "invalid_envelope", errMsg ?? "Mensaje inválido.", ct);
+                return (null, true);
+            }
+
+            var blocked = await HandleHelloFailureAsync(
+                session,
+                remoteIp,
+                attemptNumber,
+                errCode ?? "invalid_envelope",
+                errMsg ?? "Mensaje inválido.",
+                ct);
+            return (null, blocked);
+        }
+
+        if (env!.T != "hello")
+        {
+            var blocked = await HandleHelloFailureAsync(
+                session,
+                remoteIp,
+                attemptNumber,
+                "hello_required",
+                "El primer mensaje debe ser 'hello'.",
+                ct);
+            return (null, blocked);
+        }
+
+        if (!TcpProtocolParser.TryValidateHello(
+                env.D,
+                out var deviceId,
+                out var deviceType,
+                out var fwVersion,
+                out var rawToken,
+                out var helloErr))
+        {
+            var blocked = await HandleHelloFailureAsync(
+                session,
+                remoteIp,
+                attemptNumber,
+                "invalid_hello",
+                helloErr ?? "Datos de hello inválidos.",
+                ct);
+            return (null, blocked);
+        }
+
+        var candidateDevice = await _repository.GetDeviceByDeviceIdAsync(deviceId, ct);
+        var tokenHash = CryptoTokenHelper.ComputeSha256Hex(rawToken);
+        var isValidDevice =
+            candidateDevice is not null &&
+            string.Equals(candidateDevice.Tipo, deviceType, StringComparison.Ordinal) &&
+            candidateDevice.Estado is not ("revocado" or "sin_dueno") &&
+            CryptoTokenHelper.ConstantTimeHashEquals(candidateDevice.HashToken, tokenHash);
+
+        if (!isValidDevice)
+        {
+            await _repository.LogSecurityEventAsync(new SecurityAuditEntry(
+                candidateDevice?.FamilyId,
+                null,
+                candidateDevice?.Id,
+                "hello_fallido",
+                remoteIp,
+                $"device_id={deviceId}",
+                DateTimeOffset.UtcNow), ct);
+
+            var blocked = await HandleHelloFailureAsync(
+                session,
+                remoteIp,
+                attemptNumber,
+                "auth_failed",
+                "Autenticación de dispositivo rechazada.",
+                ct);
+            return (null, blocked);
+        }
+
+        ClearIpFailures(remoteIp);
+        var authenticatedDevice = candidateDevice!;
+        RegisterActiveSession(authenticatedDevice, session);
+        await SendHelloAckAsync(session, authenticatedDevice, fwVersion, ct);
+        return (authenticatedDevice, false);
+    }
+
+    private void RegisterActiveSession(RegisteredDevice device, ConnectedDeviceSession session)
+    {
+        session.DeviceId = device.DeviceId;
+        if (_activeSessions.TryRemove(device.DeviceId, out var oldSession))
+        {
+            oldSession.Close();
+        }
+        _activeSessions[device.DeviceId] = session;
+    }
+
+    /// <summary>
+    /// Registra el latido inicial y envía <c>hello_ack</c> con <c>mass_scale</c> (por defecto 0.2)
+    /// y los umbrales vigentes de la cuna para sincronizar el firmware inmediatamente tras reconectar.
+    /// </summary>
+    private async Task SendHelloAckAsync(
+        ConnectedDeviceSession session,
+        RegisteredDevice device,
+        string fwVersion,
+        CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await _repository.RecordHeartbeatAsync(
+            device.Id,
+            device.CunaId,
+            device.Tipo,
+            device.BateriaPct,
+            fwVersion,
+            now,
+            ct);
+
+        var cribConfig = await _repository.GetCribConfigAsync(device.CunaId, device.FamilyId, ct);
+        var helloAck = BuildEnvelope(session, "hello_ack", now, new
+        {
+            server_time = now.ToUnixTimeSeconds(),
+            session_ok = true,
+            last_seq = device.UltimoSeq,
+            config = new
+            {
+                mass_scale = cribConfig.EscalaMasa,
+                temp_min = cribConfig.TempMin,
+                temp_max = cribConfig.TempMax,
+                hum_min = cribConfig.HumMin,
+                hum_max = cribConfig.HumMax,
+                movement_threshold = cribConfig.MovimientoUmbral,
+                movement_alert_enabled = cribConfig.MovimientoAlertaActiva,
+                mass_noise_floor = cribConfig.RuidoMasaPiso
+            }
+        });
+
+        await session.TrySendJsonLineAsync(helloAck, ct);
+    }
+
+    private async Task RunAuthenticatedMessageLoopAsync(
+        TcpLineReader lineReader,
+        ConnectedDeviceSession session,
+        RegisteredDevice device,
+        string remoteIp,
+        CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            var (rawLine, exceeded, eos) = await lineReader.ReadLineAsync(ct);
+            if (eos)
+            {
+                break;
+            }
+
+            if (exceeded)
+            {
+                await RecordValidationFailureAsync(device.FamilyId, device.Id, remoteIp, "linea_excede_4kb", ct);
+                await SendErrorAsync(session, "line_too_long", "La línea supera el límite de 4 KB.", ct);
+                continue;
+            }
+
+            if (!TcpProtocolParser.TryParseEnvelope(rawLine!, out var env, out var errCode, out var errMsg))
+            {
+                await RecordValidationFailureAsync(device.FamilyId, device.Id, remoteIp, $"sobre_invalido:{errCode}", ct);
+                await SendErrorAsync(session, errCode ?? "invalid_envelope", errMsg ?? "Mensaje inválido.", ct);
+                if (errCode == "unsupported_version")
+                {
+                    break;
+                }
+                continue;
+            }
+
+            await DispatchAuthenticatedMessageAsync(session, device, env!, remoteIp, ct);
+        }
+    }
+
+    private async Task DispatchAuthenticatedMessageAsync(
+        ConnectedDeviceSession session,
+        RegisteredDevice device,
+        ProtocolEnvelope env,
+        string remoteIp,
+        CancellationToken ct)
+    {
+        var msgTime = env.Ts.HasValue && env.Ts.Value > 0
+            ? DateTimeOffset.FromUnixTimeSeconds(env.Ts.Value)
+            : DateTimeOffset.UtcNow;
+
+        switch (env.T)
+        {
+            case "heartbeat":
+                await HandleHeartbeatAsync(device, env.D, remoteIp, ct);
+                break;
+
+            case "telemetry":
+                await HandleTelemetryAsync(session, device, env.Seq, msgTime, env.D, remoteIp, ct);
+                break;
+
+            case "event":
+                await HandleEventAsync(session, device, env.Seq, msgTime, env.D, remoteIp, ct);
+                break;
+
+            case "ack":
+                HandleAck(session, env.D);
+                break;
+
+            default:
+                await RecordValidationFailureAsync(device.FamilyId, device.Id, remoteIp, $"tipo_no_soportado:{env.T}", ct);
+                await SendErrorAsync(session, "unsupported_type", $"Tipo '{env.T}' no permitido.", ct);
+                break;
         }
     }
 
@@ -494,8 +574,7 @@ public sealed class DeviceTcpServer : BackgroundService
         }
 
         // Deduplicación por número de secuencia (búfer offline tras reconexión)
-        var isNewSeq = await _repository.TryAdvanceSeqAsync(device.Id, seq, ct);
-        if (isNewSeq)
+        if (await _repository.TryAdvanceSeqAsync(device.Id, seq, ct))
         {
             await _repository.SaveTelemetryAsync(telemetryRecord!, ct);
         }
@@ -533,8 +612,7 @@ public sealed class DeviceTcpServer : BackgroundService
             return;
         }
 
-        var isNewSeq = await _repository.TryAdvanceSeqAsync(device.Id, seq, ct);
-        if (isNewSeq)
+        if (await _repository.TryAdvanceSeqAsync(device.Id, seq, ct))
         {
             if (alertRecord is not null)
             {
@@ -562,36 +640,25 @@ public sealed class DeviceTcpServer : BackgroundService
         }
 
         var id = idProp.GetString() ?? "";
-        var ok = !d.TryGetProperty("ok", out var okProp) ||
-                 (okProp.ValueKind == JsonValueKind.True);
+        var ok = !d.TryGetProperty("ok", out var okProp) || okProp.ValueKind == JsonValueKind.True;
         session.CompletePendingAck(id, ok);
     }
 
-    private static Task SendAckAsync(ConnectedDeviceSession session, string id, bool ok, CancellationToken ct)
-    {
-        var ack = new
+    private static object BuildEnvelope(ConnectedDeviceSession session, string type, DateTimeOffset ts, object payload)
+        => new
         {
             v = 1,
-            t = "ack",
+            t = type,
             seq = session.NextOutboundSeq(),
-            ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            d = new { id, ok }
+            ts = ts.ToUnixTimeSeconds(),
+            d = payload
         };
-        return session.TrySendJsonLineAsync(ack, ct);
-    }
+
+    private static Task SendAckAsync(ConnectedDeviceSession session, string id, bool ok, CancellationToken ct)
+        => session.TrySendJsonLineAsync(BuildEnvelope(session, "ack", DateTimeOffset.UtcNow, new { id, ok }), ct);
 
     private static Task SendErrorAsync(ConnectedDeviceSession session, string code, string msg, CancellationToken ct)
-    {
-        var err = new
-        {
-            v = 1,
-            t = "error",
-            seq = session.NextOutboundSeq(),
-            ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            d = new { code, msg }
-        };
-        return session.TrySendJsonLineAsync(err, ct);
-    }
+        => session.TrySendJsonLineAsync(BuildEnvelope(session, "error", DateTimeOffset.UtcNow, new { code, msg }), ct);
 
     private Task RecordValidationFailureAsync(
         Guid? familyId,
@@ -622,23 +689,18 @@ public sealed class DeviceTcpServer : BackgroundService
                           failedHelloCountOnConnection >= _options.MaxFailedHelloAttempts;
         if (shouldBlock)
         {
-            await RecordIpBlockedAsync(remoteIp, ct);
+            await _repository.LogSecurityEventAsync(new SecurityAuditEntry(
+                null,
+                null,
+                null,
+                "hello_bloqueo_ip",
+                remoteIp,
+                "3_intentos_hello_fallidos",
+                DateTimeOffset.UtcNow), ct);
         }
 
         await SendErrorAsync(session, errorCode, errorMessage, ct);
         return shouldBlock;
-    }
-
-    private Task RecordIpBlockedAsync(string remoteIp, CancellationToken ct)
-    {
-        return _repository.LogSecurityEventAsync(new SecurityAuditEntry(
-            null,
-            null,
-            null,
-            "hello_bloqueo_ip",
-            remoteIp,
-            "3_intentos_hello_fallidos",
-            DateTimeOffset.UtcNow), ct);
     }
 
     private bool IsIpTemporarilyBlocked(string ip)
@@ -780,6 +842,9 @@ public sealed class DeviceTcpServer : BackgroundService
             }
         }
 
+        /// <summary>
+        /// Serializa el sobre a UTF-8 y agrega el terminador <c>\n</c> del framing de protocolo TCP.
+        /// </summary>
         public async Task<bool> TrySendJsonLineAsync(object envelope, CancellationToken ct)
         {
             var utf8Bytes = JsonSerializer.SerializeToUtf8Bytes(envelope);
