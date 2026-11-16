@@ -433,7 +433,7 @@ secrets.py
 **/secrets.py
 simulators/devices.local.json
 
-# --- adicionales del proyecto ---
+# Dependencias locales y carpetas generadas
 node_modules/
 dist/
 bin/
