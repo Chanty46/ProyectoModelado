@@ -108,6 +108,9 @@ public class TelegramAndRemindersTests
         Assert.True(sw.ElapsedMilliseconds < 2000);
         var estadoMsg = tgTransport.GetSentMessages().Last(m => m.ChatId == 10001);
         Assert.Contains("Cuna Bebé", estadoMsg.Text);
+        Assert.Contains("Temperatura", estadoMsg.Text);
+        Assert.Contains("Última toma", estadoMsg.Text);
+        Assert.DoesNotContain("RF39", estadoMsg.Text);
 
         // 5. RF19 / D6: Alerta en la cuna llega a TODOS los miembros vinculados de la familia (10001 y 10002)
         var delivered = await botService.DispatchAlertForCribAsync(
@@ -123,8 +126,8 @@ public class TelegramAndRemindersTests
                 now),
             CancellationToken.None);
         Assert.Equal(2, delivered);
-        Assert.Contains(tgTransport.GetSentMessages(), m => m.ChatId == 10001 && m.Text.Contains("Alarma crítica de retiro"));
-        Assert.Contains(tgTransport.GetSentMessages(), m => m.ChatId == 10002 && m.Text.Contains("Alarma crítica de retiro"));
+        Assert.Contains(tgTransport.GetSentMessages(), m => m.ChatId == 10001 && m.Text.Contains("el bebé salió de la cuna"));
+        Assert.Contains(tgTransport.GetSentMessages(), m => m.ChatId == 10002 && m.Text.Contains("el bebé salió de la cuna"));
 
         // 6. RF22 + D6: Principal revoca al Secundario -> borra su vínculo de Telegram al instante
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
@@ -172,7 +175,7 @@ public class TelegramAndRemindersTests
         // A las 2 horas y 1 minuto dispara el recordatorio por Telegram
         var sentAfter2h = await botService.EvaluateFeedingRemindersAsync(t0.AddHours(2).AddMinutes(1), CancellationToken.None);
         Assert.Equal(1, sentAfter2h);
-        Assert.Contains(tgTransport.GetSentMessages(), m => m.ChatId == 20001 && m.Text.Contains("Recordatorio de alimentación (RF18)"));
+        Assert.Contains(tgTransport.GetSentMessages(), m => m.ChatId == 20001 && m.Text.Contains("Recordatorio de alimentación") && m.Text.Contains("2 horas"));
     }
 
     [Fact]
@@ -353,10 +356,10 @@ public class TelegramAndRemindersTests
         await botService.ProcessInboundCommandAsync(45001, "/estado", now, CancellationToken.None);
         var msg = tgTransport.GetSentMessages().Last(m => m.ChatId == 45001);
         Assert.Contains("Cuna Consolidada", msg.Text);
-        Assert.Contains("T=22.4 °C", msg.Text);
-        Assert.Contains("H=48.0 %", msg.Text);
-        Assert.Contains("Masa=3.450 kg", msg.Text);
-        Assert.Contains("Biberón=36.9 °C / 185 g", msg.Text);
+        Assert.Matches(@"Temperatura: 22[.,]4 °C", msg.Text);
+        Assert.Contains("Humedad: 48 %", msg.Text);
+        Assert.Contains("en la cuna", msg.Text);
+        Assert.Matches(@"Biberón: 36[.,]9 °C · 185 g", msg.Text);
     }
 
     [Fact]
