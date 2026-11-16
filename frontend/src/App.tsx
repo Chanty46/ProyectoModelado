@@ -15,10 +15,7 @@ import { AcceptInvitationPage } from "./pages/AcceptInvitationPage";
 
 type DashboardTab = "monitoreo" | "comunicacion" | "familia";
 
-/**
- * Raíz de la aplicación web de Cuna Inteligente.
- * Gestiona rutas (`/`, `/invitacion/:token`), sesión familiar y navegación por pestañas.
- */
+/** Componente raíz: rutas principales, sesión familiar y navegación por pestañas. */
 export default function App() {
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DashboardTab>("monitoreo");
