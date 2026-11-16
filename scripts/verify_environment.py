@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-Script de verificación y preparación del entorno para Cuna Inteligente (Hito M10).
-Ejecuta la batería completa de comprobaciones de herramientas, seguridad y pruebas
-antes de la defensa o demostración del proyecto.
-"""
+"""Revisa herramientas instaladas, secretos en Git y todas las pruebas del repositorio."""
 
 from __future__ import annotations
 
