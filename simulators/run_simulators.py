@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-Ejecutor asíncrono de los 5 simuladores de dispositivos de la Cuna Inteligente (M3).
-Habla el protocolo TCP línea-JSON (docs/PROTOCOL.md) contra CunaServer (:9000).
-"""
+"""Simuladores TCP en Python 3 para probar la cuna sin placas Pico W conectadas."""
 
 from __future__ import annotations
 
