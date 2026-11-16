@@ -302,10 +302,7 @@ public sealed class TelegramBotService
 
         if (text.StartsWith("/start", StringComparison.OrdinalIgnoreCase))
         {
-            await _transport.SendMessageAsync(
-                chatId,
-                "Bienvenido al bot de Cuna Inteligente. Genera un código temporal (10 min) desde tu panel web y envía: /vincular CODIGO",
-                ct);
+            await _transport.SendMessageAsync(chatId, TelegramMessages.Welcome, ct);
             return;
         }
 
@@ -314,10 +311,7 @@ public sealed class TelegramBotService
             var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 2 || parts[1].Length < 6)
             {
-                await _transport.SendMessageAsync(
-                    chatId,
-                    "Formato inválido. Usa: /vincular CODIGO (generado desde el panel web).",
-                    ct);
+                await _transport.SendMessageAsync(chatId, TelegramMessages.LinkMissingCode, ct);
                 return;
             }
 
@@ -336,10 +330,7 @@ public sealed class TelegramBotService
                     "codigo_invalido_expirado_o_usado",
                     now), ct);
 
-                await _transport.SendMessageAsync(
-                    chatId,
-                    "Código de vinculación inválido, expirado o bloqueado tras superar el límite de intentos.",
-                    ct);
+                await _transport.SendMessageAsync(chatId, TelegramMessages.LinkFailed, ct);
                 return;
             }
 
@@ -353,10 +344,7 @@ public sealed class TelegramBotService
                 null,
                 now), ct);
 
-            await _transport.SendMessageAsync(
-                chatId,
-                "Chat de Telegram vinculado correctamente a tu cuenta familiar (RF38). Usa /estado para consultar la cuna.",
-                ct);
+            await _transport.SendMessageAsync(chatId, TelegramMessages.LinkOk, ct);
             return;
         }
 
@@ -379,55 +367,72 @@ public sealed class TelegramBotService
                     "chat_no_vinculado_o_usuario_revocado",
                     now), ct);
 
-                await _transport.SendMessageAsync(
-                    chatId,
-                    "Acceso denegado (RF39): este chat no está vinculado a ninguna familia activa.",
-                    ct);
+                await _transport.SendMessageAsync(chatId, TelegramMessages.AccessDenied, ct);
                 return;
             }
 
             var cribs = await _deviceRepo.ListCribsByFamilyAsync(membership.FamilyId, ct);
             if (cribs.Count == 0)
             {
-                await _transport.SendMessageAsync(
-                    chatId,
-                    "Tu familia aún no tiene cunas registradas.",
-                    ct);
+                await _transport.SendMessageAsync(chatId, TelegramMessages.NoCribs, ct);
                 return;
             }
 
-            var sb = new StringBuilder();
-            sb.AppendLine("Estado actual de Cuna Inteligente (RF39):");
+            var babies = await _deviceRepo.ListBabiesByFamilyAsync(membership.FamilyId, ct);
+            var statuses = new List<TelegramMessages.CribStatus>();
             foreach (var c in cribs)
             {
-                var telemetry = await _deviceRepo.ListTelemetryForCribAsync(c.Id, ct);
-                var latest = telemetry.LastOrDefault();
-                var tempStr = latest?.TempC is { } t ? $"{t:F1} °C" : "S/D";
-                var humStr = latest?.Humedad is { } h ? $"{h:F1} %" : "S/D";
-                var massStr = latest?.MasaKg is { } m ? $"{m:F3} kg" : "S/D";
-
-                sb.AppendLine(
-                    $"- {c.Nombre}: conexión={c.EstadoConexion}, modo={c.ModoOperacion}, T={tempStr}, H={humStr}, Masa={massStr}");
+                statuses.Add(await BuildCribStatusAsync(c, babies, ct));
             }
 
-            await _transport.SendMessageAsync(chatId, sb.ToString().TrimEnd(), ct);
+            await _transport.SendMessageAsync(chatId, TelegramMessages.Status(statuses, now), ct);
             return;
         }
 
         if (text.StartsWith("/ayuda", StringComparison.OrdinalIgnoreCase) ||
             text.StartsWith("/help", StringComparison.OrdinalIgnoreCase))
         {
-            await _transport.SendMessageAsync(
-                chatId,
-                "Comandos disponibles de Cuna Inteligente:\n• /vincular CODIGO — Vincula tu chat de Telegram con tu cuenta familiar (código temporal de 10 min generado desde la web).\n• /estado — Consulta el estado en vivo de las cunas de tu familia (< 2 s).\n• /ayuda — Muestra esta información de ayuda.",
-                ct);
+            await _transport.SendMessageAsync(chatId, TelegramMessages.Help, ct);
             return;
         }
 
-        await _transport.SendMessageAsync(
-            chatId,
-            "Comando no reconocido. Comandos disponibles: /vincular CODIGO, /estado, /ayuda",
-            ct);
+        await _transport.SendMessageAsync(chatId, TelegramMessages.UnknownCommand, ct);
+    }
+
+    /// <summary>
+    /// Junta para /estado el último valor conocido de cada sensor (cada dispositivo manda solo sus campos),
+    /// el bebé asignado a la cuna y su última toma.
+    /// </summary>
+    private async Task<TelegramMessages.CribStatus> BuildCribStatusAsync(
+        CribRecord crib,
+        IReadOnlyList<BabyRecord> familyBabies,
+        CancellationToken ct)
+    {
+        var telemetry = (await _deviceRepo.ListTelemetryForCribAsync(crib.Id, ct))
+            .OrderByDescending(r => r.Ts)
+            .ToList();
+
+        var temp = telemetry.FirstOrDefault(r => r.TempC.HasValue);
+        var hum = telemetry.FirstOrDefault(r => r.Humedad.HasValue);
+        var mass = telemetry.FirstOrDefault(r => r.MasaKg.HasValue);
+
+        var baby = familyBabies.FirstOrDefault(b => b.CunaId == crib.Id);
+        FeedingSessionRecord? lastFeeding = null;
+        if (baby is not null)
+        {
+            lastFeeding = (await _deviceRepo.ListFeedingSessionsByBabyAsync(baby.Id, ct))
+                .OrderByDescending(f => f.Inicio)
+                .FirstOrDefault();
+        }
+
+        return new TelegramMessages.CribStatus(
+            crib,
+            baby,
+            temp?.TempC,
+            hum?.Humedad,
+            mass?.MasaKg,
+            telemetry.FirstOrDefault()?.Ts,
+            lastFeeding);
     }
 
     /// <summary>
@@ -450,8 +455,7 @@ public sealed class TelegramBotService
             return 0;
         }
 
-        var prefix = alert.Severidad == "critica" ? "[ALERTA CRÍTICA]" : "[AVISO]";
-        var text = $"{prefix} {crib.Nombre}: {alert.Mensaje ?? alert.Tipo}";
+        var text = TelegramMessages.Alert(crib, alert);
 
         var delivered = 0;
         foreach (var chatId in chats)
@@ -490,7 +494,9 @@ public sealed class TelegramBotService
                 ct);
 
             var cribs = await _deviceRepo.ListCribsByFamilyAsync(rem.FamilyId, ct);
+            // El evento guardado conserva el texto técnico; por Telegram va la versión para el cuidador.
             var msg = $"Recordatorio de alimentación (RF18): han transcurrido {rem.IntervaloHoras} h desde la última toma.";
+            var telegramMsg = TelegramMessages.FeedingReminder(rem.IntervaloHoras);
 
             foreach (var crib in cribs)
             {
@@ -508,7 +514,7 @@ public sealed class TelegramBotService
             var chats = await _accountRepo.ListLinkedTelegramChatsByFamilyAsync(rem.FamilyId, ct);
             foreach (var chatId in chats)
             {
-                await _transport.SendMessageAsync(chatId, msg, ct);
+                await _transport.SendMessageAsync(chatId, telegramMsg, ct);
             }
 
             sentFamilies++;
