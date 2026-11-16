@@ -57,7 +57,7 @@ public static class TelegramMessages
         "Genera uno nuevo en la web y vuelve a enviarlo.";
 
     public const string LinkOk =
-        "✅ ¡Listo! Este chat quedó vinculado a tu familia.\n" +
+        "✅ ¡Listo! Este chat quedó vinculado correctamente a tu familia.\n" +
         "\n" +
         "Desde ahora te llegarán aquí las alertas de la cuna.\n" +
         "Escribe /estado para ver cómo está ahora mismo.";
@@ -87,7 +87,9 @@ public static class TelegramMessages
         decimal? Humidity,
         decimal? MassKg,
         DateTimeOffset? LastReadingAt,
-        FeedingSessionRecord? LastFeeding);
+        FeedingSessionRecord? LastFeeding,
+        decimal? BottleTempC = null,
+        decimal? BottleMassG = null);
 
     public static string Status(IReadOnlyList<CribStatus> cribs, DateTimeOffset now)
     {
@@ -107,6 +109,12 @@ public static class TelegramMessages
               .AppendLine(s.Humidity is { } h ? $"{h.ToString("0", Culture)} %" : "sin datos");
             sb.Append("💡 Luz nocturna: ")
               .AppendLine(s.Crib.LuzEncendida ? $"encendida al {s.Crib.LuzNivel} %" : "apagada");
+            if (s.BottleTempC is not null || s.BottleMassG is not null)
+            {
+                var bottleTemp = s.BottleTempC is { } bt ? $"{bt.ToString("0.0", Culture)} °C" : "sin datos";
+                var bottleMass = s.BottleMassG is { } bm ? $"{bm.ToString("0", Culture)} g" : "sin datos";
+                sb.AppendLine($"🍼 Biberón: {bottleTemp} · {bottleMass}");
+            }
             sb.AppendLine(FeedingLine(s.LastFeeding, now));
 
             if (s.LastReadingAt is { } at)

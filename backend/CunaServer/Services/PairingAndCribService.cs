@@ -211,15 +211,20 @@ public sealed class PairingAndCribService
             return ServiceResult<IReadOnlyList<CribSummaryResponse>>.Forbidden("El usuario no pertenece a una familia activa.");
         }
 
-        var cribs = await _deviceRepo.ListCribsByFamilyAsync(membership.FamilyId, ct);
-        var babies = await _deviceRepo.ListBabiesByFamilyAsync(membership.FamilyId, ct);
-        var summaries = new List<CribSummaryResponse>(cribs.Count);
+        var cribsTask = _deviceRepo.ListCribsByFamilyAsync(membership.FamilyId, ct);
+        var babiesTask = _deviceRepo.ListBabiesByFamilyAsync(membership.FamilyId, ct);
+        await Task.WhenAll(cribsTask, babiesTask);
 
-        foreach (var crib in cribs)
+        var cribs = await cribsTask;
+        var babies = await babiesTask;
+        var deviceLists = await Task.WhenAll(cribs.Select(c => _deviceRepo.ListDevicesByCribAsync(c.Id, ct)));
+
+        var summaries = new List<CribSummaryResponse>(cribs.Count);
+        for (var i = 0; i < cribs.Count; i++)
         {
-            var devices = await _deviceRepo.ListDevicesByCribAsync(crib.Id, ct);
+            var crib = cribs[i];
             var baby = babies.FirstOrDefault(b => b.CunaId == crib.Id);
-            summaries.Add(new CribSummaryResponse(crib, devices, baby));
+            summaries.Add(new CribSummaryResponse(crib, deviceLists[i], baby));
         }
 
         return ServiceResult<IReadOnlyList<CribSummaryResponse>>.Ok(summaries);
@@ -407,39 +412,15 @@ public sealed class PairingAndCribService
         return null;
     }
 
-    private async Task<(UserMembership? Membership, string? ForbiddenMessage)> RequirePrincipalAsync(
+    private Task<(UserMembership? Membership, string? ForbiddenMessage)> RequirePrincipalAsync(
         AuthenticatedIdentity identity,
         string attemptedAction,
         string? clientIp,
         CancellationToken ct)
-    {
-        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
-        if (membership is null)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                null,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"sin_familia:{attemptedAction}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, "Acceso denegado: el usuario no pertenece a una familia activa.");
-        }
-
-        if (!string.Equals(membership.Rol, UserRoles.Principal, StringComparison.Ordinal))
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"rol_secundario:{attemptedAction}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, "Acceso denegado (RF03): se requieren privilegios de Usuario Principal.");
-        }
-
-        return (membership, null);
-    }
+        => FamilyAuthorizationHelper.RequirePrincipalAsync(
+            _accountRepo,
+            identity,
+            attemptedAction,
+            clientIp,
+            ct);
 }

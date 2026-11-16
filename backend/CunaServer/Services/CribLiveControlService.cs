@@ -6,6 +6,9 @@ using CunaServer.Telegram;
 
 namespace CunaServer.Services;
 
+/// <summary>
+/// Parámetros temporales de la máquina de estados en vivo de la cuna (RF04, RF05, RF20).
+/// </summary>
 public sealed class CribLiveControlOptions
 {
     public TimeSpan RemovalGraceWindow { get; set; } = TimeSpan.FromSeconds(5);
@@ -14,6 +17,10 @@ public sealed class CribLiveControlOptions
     public TimeSpan WatchdogPollInterval { get; set; } = TimeSpan.FromSeconds(5);
 }
 
+/// <summary>
+/// Orquestador del estado en vivo de la cuna: modos de operación, umbrales, luz nocturna,
+/// ventana de gracia de retiro (5 s) y watchdog de desconexión (&gt; 60 s).
+/// </summary>
 public sealed class CribLiveControlService
 {
     private readonly IFamilyAccountRepository _accountRepo;
@@ -23,6 +30,10 @@ public sealed class CribLiveControlService
     private readonly ILogger<CribLiveControlService> _logger;
     private readonly TelegramBotService? _telegramService;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _removalGraceWindows = new();
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _cribModeLocks = new();
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _cribTcpDispatchLocks = new();
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _cribTcpDispatchCts = new();
+    private readonly ConcurrentDictionary<Guid, long> _cribModeEpochs = new();
 
     public CribLiveControlService(
         IFamilyAccountRepository accountRepo,
@@ -65,29 +76,28 @@ public sealed class CribLiveControlService
         }
 
         // Si el Modo Atención ya expiró, regresarlo automáticamente a Monitoreo (RF05)
-        if (crib.ModoOperacion == "atencion" &&
-            crib.ModoAtencionExpiraEn.HasValue &&
-            DateTimeOffset.UtcNow >= crib.ModoAtencionExpiraEn.Value)
+        if (HasAttentionModeExpired(crib, DateTimeOffset.UtcNow))
         {
-            crib = await _deviceRepo.UpdateCribModeAsync(cunaId, "monitoreo", null, ct) ?? crib;
+            crib = await ApplyModeTransitionAsync(crib, "monitoreo", null, null, "temporizador_900s", ct) ?? crib;
         }
 
-        var config = await _deviceRepo.GetCribConfigAsync(cunaId, membership.FamilyId, ct);
-        var telemetryList = await _deviceRepo.ListTelemetryForCribAsync(cunaId, ct);
-        var recentTelemetry = telemetryList.TakeLast(20).ToList();
-        var latestTelemetry = recentTelemetry.LastOrDefault();
+        var configTask = _deviceRepo.GetCribConfigAsync(cunaId, membership.FamilyId, ct);
+        var telemetryTask = _deviceRepo.ListTelemetryForCribAsync(cunaId, ct);
+        var alertsTask = _deviceRepo.ListAlertsForCribAsync(cunaId, ct);
+        var devicesTask = _deviceRepo.ListDevicesByCribAsync(cunaId, ct);
 
-        var alertsList = await _deviceRepo.ListAlertsForCribAsync(cunaId, ct);
-        var recentAlerts = alertsList.TakeLast(20).Reverse().ToList();
-        var devices = await _deviceRepo.ListDevicesByCribAsync(cunaId, ct);
+        await Task.WhenAll(configTask, telemetryTask, alertsTask, devicesTask);
+
+        var telemetryList = await telemetryTask;
+        var alertsList = await alertsTask;
 
         return ServiceResult<LiveCribStatusResponse>.Ok(new LiveCribStatusResponse(
             crib,
-            config,
-            latestTelemetry,
-            recentTelemetry,
-            recentAlerts,
-            devices,
+            await configTask,
+            ConsolidateLatestTelemetry(telemetryList),
+            telemetryList.TakeLast(20).ToList(),
+            alertsList.TakeLast(20).Reverse().ToList(),
+            await devicesTask,
             IsInRemovalGraceWindow(cunaId)));
     }
 
@@ -220,6 +230,10 @@ public sealed class CribLiveControlService
         return ServiceResult<CribRecord>.Ok(updated);
     }
 
+    /// <summary>
+    /// RF08 + RF03: Actualiza umbrales de microclima, movimiento y calibración <c>mass_scale</c>
+    /// (por defecto 0.2, acotado a 0.05–1.00 según D14 para la celda HX711) y los sincroniza por TCP con ACK.
+    /// </summary>
     public async Task<ServiceResult<CribConfig>> UpdateCribThresholdsAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
@@ -245,60 +259,13 @@ public sealed class CribLiveControlService
             return ServiceResult<CribConfig>.Forbidden(forbidden ?? "Acceso denegado.");
         }
 
-        if (request.TempMin is < 10.0m or > 30.0m ||
-            request.TempMax is < 15.0m or > 38.0m ||
-            request.TempMax <= request.TempMin)
+        if (ValidateThresholdsRequest(request) is { } validationError)
         {
-            return ServiceResult<CribConfig>.BadRequest(
-                "Rango térmico inválido (temp_min 10–30 °C, temp_max 15–38 °C y temp_max > temp_min).");
-        }
-
-        if (request.HumMin is < 10.0m or > 80.0m ||
-            request.HumMax is < 20.0m or > 95.0m ||
-            request.HumMax <= request.HumMin)
-        {
-            return ServiceResult<CribConfig>.BadRequest(
-                "Rango de humedad inválido (hum_min 10–80 %, hum_max 20–95 % y hum_max > hum_min).");
-        }
-
-        if (request.MovimientoUmbral is <= 0m or > 10.0m)
-        {
-            return ServiceResult<CribConfig>.BadRequest("El umbral de movimiento debe estar entre 0.001 y 10.000 kg/min (RF29).");
-        }
-
-        if (request.RuidoMasaPiso is < 0m or > 1.0m)
-        {
-            return ServiceResult<CribConfig>.BadRequest("El piso de ruido de masa debe estar entre 0.000 y 1.000 kg.");
-        }
-
-        if (request.EscalaMasa is < 0.05m or > 1.0m)
-        {
-            return ServiceResult<CribConfig>.BadRequest("La escala de masa (mass_scale) debe estar entre 0.05 y 1.00 (D14).");
+            return ServiceResult<CribConfig>.BadRequest(validationError);
         }
 
         var updatedCfg = await _deviceRepo.UpdateCribThresholdsAsync(cunaId, membership.FamilyId, request, ct);
-
-        // Enviar nuevos umbrales por TCP a la Unidad Central y al Colchón si están conectados (RF08)
-        var devices = await _deviceRepo.ListActiveDevicesForCribAsync(cunaId, ct);
-        foreach (var dev in devices.Where(d => d.Tipo is DeviceTypes.Central or DeviceTypes.Colchon))
-        {
-            await _tcpServer.SendCommandAsync(
-                dev.DeviceId,
-                "thresholds_set",
-                new
-                {
-                    mass_scale = updatedCfg.EscalaMasa,
-                    temp_min = updatedCfg.TempMin,
-                    temp_max = updatedCfg.TempMax,
-                    hum_min = updatedCfg.HumMin,
-                    hum_max = updatedCfg.HumMax,
-                    movement_threshold = updatedCfg.MovimientoUmbral,
-                    movement_alert_enabled = updatedCfg.MovimientoAlertaActiva,
-                    mass_noise_floor = updatedCfg.RuidoMasaPiso
-                },
-                requireAck: false,
-                ct: ct);
-        }
+        await DispatchThresholdsToCribDevicesAsync(cunaId, updatedCfg, ct);
 
         await _deviceRepo.LogCaregiverActionAsync(new CaregiverAuditLogEntry(
             membership.FamilyId,
@@ -336,16 +303,13 @@ public sealed class CribLiveControlService
             return true;
         }
 
+        var now = DateTimeOffset.UtcNow;
         switch (alertRecord.Tipo)
         {
             case "button_attention":
             {
                 // RF05: El botón táctil de la Unidad Central conmuta Modo Atención (900 s) o silencia alarma
-                var isCurrentlyAttention =
-                    crib.ModoOperacion == "atencion" &&
-                    (!crib.ModoAtencionExpiraEn.HasValue || DateTimeOffset.UtcNow < crib.ModoAtencionExpiraEn.Value);
-
-                var nextMode = isCurrentlyAttention ? "monitoreo" : "atencion";
+                var nextMode = IsAttentionModeActive(crib, now) ? "monitoreo" : "atencion";
                 await ApplyModeTransitionAsync(crib, nextMode, null, null, source: "boton_tactil_central", ct);
                 return true;
             }
@@ -353,11 +317,7 @@ public sealed class CribLiveControlService
             case "removal":
             {
                 // RF04 + RF05: Si Modo Atención está activo, se ignora el disparo de alarma
-                var isAttentionActive =
-                    crib.ModoOperacion == "atencion" &&
-                    (!crib.ModoAtencionExpiraEn.HasValue || DateTimeOffset.UtcNow < crib.ModoAtencionExpiraEn.Value);
-
-                if (isAttentionActive)
+                if (IsAttentionModeActive(crib, now))
                 {
                     return false;
                 }
@@ -376,18 +336,15 @@ public sealed class CribLiveControlService
                     return false;
                 }
 
-                if (_telegramService is not null)
-                {
-                    await _telegramService.DispatchAlertForCribAsync(crib.Id, alertRecord, ct);
-                }
+                await TryDispatchTelegramAlertAsync(crib.Id, alertRecord, ct);
                 return true;
             }
 
             default:
             {
-                if (_telegramService is not null && alertRecord.Tipo is "env_out_of_range" or "battery_low")
+                if (alertRecord.Tipo is "env_out_of_range" or "battery_low")
                 {
-                    await _telegramService.DispatchAlertForCribAsync(crib.Id, alertRecord, ct);
+                    await TryDispatchTelegramAlertAsync(crib.Id, alertRecord, ct);
                 }
                 return true;
             }
@@ -395,7 +352,7 @@ public sealed class CribLiveControlService
     }
 
     /// <summary>
-    /// Evalúa la expiración de Modo Atención (900 s, RF05) y el Watchdog de desconexión (> 60 s sin heartbeat, RF20).
+    /// Evalúa la expiración de Modo Atención (900 s, RF05) y el Watchdog de desconexión (&gt; 60 s sin heartbeat, RF20).
     /// </summary>
     public async Task EvaluateWatchdogAndTimersAsync(DateTimeOffset now, CancellationToken ct)
     {
@@ -403,44 +360,190 @@ public sealed class CribLiveControlService
 
         foreach (var crib in allCribs)
         {
-            // 1. RF05: Expiración automática del Modo Atención tras 900 s
-            if (crib.ModoOperacion == "atencion" &&
-                crib.ModoAtencionExpiraEn.HasValue &&
-                now >= crib.ModoAtencionExpiraEn.Value)
+            if (HasAttentionModeExpired(crib, now))
             {
                 await ApplyModeTransitionAsync(crib, "monitoreo", null, null, source: "temporizador_900s", ct);
             }
 
-            // 2. RF20: Watchdog en servidor (> 60 s sin heartbeat de la Unidad Central)
             if (crib.EstadoConexion == "en_linea" &&
                 crib.UltimoHeartbeat.HasValue &&
                 (now - crib.UltimoHeartbeat.Value) > _options.WatchdogTimeout)
             {
-                await _deviceRepo.UpdateCribConnectionStateAsync(crib.Id, "desconectada", ct);
-
-                var central = await _deviceRepo.GetCentralDeviceForCribAsync(crib.Id, ct);
-                var watchdogAlert = new EventAlertRecord(
-                    Guid.NewGuid(),
-                    crib.Id,
-                    central?.Id ?? Guid.Empty,
-                    "watchdog_offline",
-                    "critica",
-                    "Alerta crítica (RF20): pérdida de conexión con la Unidad Central (> 60 s sin heartbeat).",
-                    JsonSerializer.Serialize(new
-                    {
-                        kind = "watchdog_offline",
-                        last_heartbeat = crib.UltimoHeartbeat.Value
-                    }),
-                    now);
-                await _deviceRepo.SaveEventAlertAsync(watchdogAlert, ct);
-
-                if (_telegramService is not null)
-                {
-                    await _telegramService.DispatchAlertForCribAsync(crib.Id, watchdogAlert, ct);
-                }
+                await HandleWatchdogTimeoutAsync(crib, now, ct);
             }
         }
     }
+
+    /// <summary>
+    /// Combina el último valor conocido de cada magnitud física recorriendo la telemetría de más reciente a más antigua,
+    /// porque cada nodo Pico W (central, colchón, biberón) reporta un subconjunto distinto de sensores.
+    /// </summary>
+    public static TelemetryRecord? ConsolidateLatestTelemetry(IReadOnlyList<TelemetryRecord> telemetryList)
+    {
+        if (telemetryList.Count == 0)
+        {
+            return null;
+        }
+
+        var newest = telemetryList[^1];
+        decimal? masaKg = null;
+        decimal? indiceMovimiento = null;
+        decimal? tempC = null;
+        decimal? humedad = null;
+        decimal? masaBiberonG = null;
+        decimal? tempBiberonC = null;
+        int? bateriaPct = null;
+
+        for (var i = telemetryList.Count - 1; i >= 0; i--)
+        {
+            var item = telemetryList[i];
+            masaKg ??= item.MasaKg;
+            indiceMovimiento ??= item.IndiceMovimiento;
+            tempC ??= item.TempC;
+            humedad ??= item.Humedad;
+            masaBiberonG ??= item.MasaBiberonG;
+            tempBiberonC ??= item.TempBiberonC;
+            bateriaPct ??= item.BateriaPct;
+
+            if (masaKg.HasValue &&
+                indiceMovimiento.HasValue &&
+                tempC.HasValue &&
+                humedad.HasValue &&
+                masaBiberonG.HasValue &&
+                tempBiberonC.HasValue &&
+                bateriaPct.HasValue)
+            {
+                break;
+            }
+        }
+
+        return newest with
+        {
+            MasaKg = masaKg,
+            IndiceMovimiento = indiceMovimiento,
+            TempC = tempC,
+            Humedad = humedad,
+            MasaBiberonG = masaBiberonG,
+            TempBiberonC = tempBiberonC,
+            BateriaPct = bateriaPct
+        };
+    }
+
+    private static string? ValidateThresholdsRequest(UpdateCribThresholdsRequest request)
+    {
+        if (request.TempMin is < 10.0m or > 30.0m ||
+            request.TempMax is < 15.0m or > 38.0m ||
+            request.TempMax <= request.TempMin)
+        {
+            return "Rango térmico inválido (temp_min 10–30 °C, temp_max 15–38 °C y temp_max > temp_min).";
+        }
+
+        if (request.HumMin is < 10.0m or > 80.0m ||
+            request.HumMax is < 20.0m or > 95.0m ||
+            request.HumMax <= request.HumMin)
+        {
+            return "Rango de humedad inválido (hum_min 10–80 %, hum_max 20–95 % y hum_max > hum_min).";
+        }
+
+        if (request.MovimientoUmbral is <= 0m or > 10.0m)
+        {
+            return "El umbral de movimiento debe estar entre 0.001 y 10.000 kg/min (RF29).";
+        }
+
+        if (request.RuidoMasaPiso is < 0m or > 1.0m)
+        {
+            return "El piso de ruido de masa debe estar entre 0.000 y 1.000 kg.";
+        }
+
+        if (request.EscalaMasa is < 0.05m or > 1.0m)
+        {
+            return "La escala de masa (mass_scale) debe estar entre 0.05 y 1.00 (D14).";
+        }
+
+        return null;
+    }
+
+    private async Task DispatchThresholdsToCribDevicesAsync(Guid cunaId, CribConfig updatedCfg, CancellationToken ct)
+    {
+        var devices = await _deviceRepo.ListActiveDevicesForCribAsync(cunaId, ct);
+        var targetDeviceIds = devices
+            .Where(d => d.Tipo is DeviceTypes.Central or DeviceTypes.Colchon)
+            .Select(d => d.DeviceId)
+            .ToList();
+        if (targetDeviceIds.Count == 0)
+        {
+            return;
+        }
+
+        var thresholdsPayload = new
+        {
+            mass_scale = updatedCfg.EscalaMasa,
+            temp_min = updatedCfg.TempMin,
+            temp_max = updatedCfg.TempMax,
+            hum_min = updatedCfg.HumMin,
+            hum_max = updatedCfg.HumMax,
+            movement_threshold = updatedCfg.MovimientoUmbral,
+            movement_alert_enabled = updatedCfg.MovimientoAlertaActiva,
+            mass_noise_floor = updatedCfg.RuidoMasaPiso
+        };
+
+        _ = Task.Run(async () =>
+        {
+            foreach (var targetDeviceId in targetDeviceIds)
+            {
+                try
+                {
+                    await _tcpServer.SendCommandAsync(
+                        targetDeviceId,
+                        "thresholds_set",
+                        thresholdsPayload,
+                        requireAck: true,
+                        ct: CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Error enviando thresholds_set a {DeviceId}", targetDeviceId);
+                }
+            }
+        }, CancellationToken.None);
+    }
+
+    private async Task HandleWatchdogTimeoutAsync(CribRecord crib, DateTimeOffset now, CancellationToken ct)
+    {
+        await _deviceRepo.UpdateCribConnectionStateAsync(crib.Id, "desconectada", ct);
+
+        var central = await _deviceRepo.GetCentralDeviceForCribAsync(crib.Id, ct);
+        var watchdogAlert = new EventAlertRecord(
+            Guid.NewGuid(),
+            crib.Id,
+            central?.Id ?? Guid.Empty,
+            "watchdog_offline",
+            "critica",
+            "Alerta crítica (RF20): pérdida de conexión con la Unidad Central (> 60 s sin heartbeat).",
+            JsonSerializer.Serialize(new
+            {
+                kind = "watchdog_offline",
+                last_heartbeat = crib.UltimoHeartbeat!.Value
+            }),
+            now);
+
+        await _deviceRepo.SaveEventAlertAsync(watchdogAlert, ct);
+        await TryDispatchTelegramAlertAsync(crib.Id, watchdogAlert, ct);
+    }
+
+    private Task TryDispatchTelegramAlertAsync(Guid cunaId, EventAlertRecord alert, CancellationToken ct)
+        => _telegramService is null
+            ? Task.CompletedTask
+            : _telegramService.DispatchAlertForCribAsync(cunaId, alert, ct);
+
+    private static bool IsAttentionModeActive(CribRecord crib, DateTimeOffset now)
+        => crib.ModoOperacion == "atencion" &&
+           (!crib.ModoAtencionExpiraEn.HasValue || now < crib.ModoAtencionExpiraEn.Value);
+
+    private static bool HasAttentionModeExpired(CribRecord crib, DateTimeOffset now)
+        => crib.ModoOperacion == "atencion" &&
+           crib.ModoAtencionExpiraEn.HasValue &&
+           now >= crib.ModoAtencionExpiraEn.Value;
 
     private async Task<CribRecord?> ApplyModeTransitionAsync(
         CribRecord crib,
@@ -450,67 +553,111 @@ public sealed class CribLiveControlService
         string source,
         CancellationToken ct)
     {
-        CancelRemovalGraceWindow(crib.Id);
+        var cribLock = _cribModeLocks.GetOrAdd(crib.Id, _ => new SemaphoreSlim(1, 1));
+        CribRecord? updated;
+        long transitionEpoch;
+        CancellationTokenSource? dispatchCts = null;
 
-        DateTimeOffset? expiraEn = targetMode == "atencion"
-            ? DateTimeOffset.UtcNow.Add(_options.AttentionModeDuration)
-            : null;
-
-        var updated = await _deviceRepo.UpdateCribModeAsync(crib.Id, targetMode, expiraEn, ct);
-
-        var central = await _deviceRepo.GetCentralDeviceForCribAsync(crib.Id, ct);
-        if (central is not null)
+        await cribLock.WaitAsync(ct);
+        try
         {
-            // Silenciar alarma activa si la hubiera y actualizar modo y LED RGB (RF05 / IU-03)
-            var ledColor = targetMode == "atencion" ? "yellow" : "green";
-            var durationSec = (int)_options.AttentionModeDuration.TotalSeconds;
+            CancelRemovalGraceWindow(crib.Id);
+            // Incrementar la época bajo bloqueo cancela y descarta despachos TCP obsoletos en vuelo
+            transitionEpoch = _cribModeEpochs.AddOrUpdate(crib.Id, 1, (_, prev) => prev + 1);
 
-            _ = Task.Run(async () =>
+            DateTimeOffset? expiraEn = targetMode == "atencion"
+                ? DateTimeOffset.UtcNow.Add(_options.AttentionModeDuration)
+                : null;
+
+            updated = await _deviceRepo.UpdateCribModeAsync(crib.Id, targetMode, expiraEn, ct);
+            if (updated is not null)
             {
-                try
-                {
-                    await _tcpServer.SendCommandAsync(
-                        central.DeviceId,
-                        "alarm_set",
-                        new { on = false },
-                        requireAck: false,
-                        ct: CancellationToken.None);
-
-                    await _tcpServer.SendCommandAsync(
-                        central.DeviceId,
-                        "mode_set",
-                        new { mode = targetMode, duration_s = targetMode == "atencion" ? durationSec : 0 },
-                        requireAck: false,
-                        ct: CancellationToken.None);
-
-                    await _tcpServer.SendCommandAsync(
-                        central.DeviceId,
-                        "status_led",
-                        new { color = ledColor },
-                        requireAck: false,
-                        ct: CancellationToken.None);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Error enviando comandos TCP de transición de modo a {DeviceId}", central.DeviceId);
-                }
-            }, CancellationToken.None);
+                dispatchCts = ReplaceCribTcpDispatchCts(crib.Id);
+            }
+        }
+        finally
+        {
+            cribLock.Release();
         }
 
-        await _deviceRepo.LogCaregiverActionAsync(new CaregiverAuditLogEntry(
+        if (updated is null)
+        {
+            return null;
+        }
+
+        var centralTask = _deviceRepo.GetCentralDeviceForCribAsync(crib.Id, ct);
+        var auditTask = _deviceRepo.LogCaregiverActionAsync(new CaregiverAuditLogEntry(
             crib.FamilyId,
             userId,
             perfilId,
             $"modo_{targetMode}_rf05",
-            JsonSerializer.Serialize(new { cuna_id = crib.Id, modo = targetMode, origen = source, expira_en = expiraEn }),
+            JsonSerializer.Serialize(new { cuna_id = crib.Id, modo = targetMode, origen = source, expira_en = updated.ModoAtencionExpiraEn }),
             DateTimeOffset.UtcNow), ct);
+
+        await Task.WhenAll(centralTask, auditTask);
+        var central = await centralTask;
+
+        if (central is not null && dispatchCts is not null)
+        {
+            ScheduleModeTransitionTcpCommands(crib.Id, central.DeviceId, targetMode, transitionEpoch, dispatchCts);
+        }
+        else if (dispatchCts is not null)
+        {
+            ReleaseCribTcpDispatchCts(crib.Id, dispatchCts);
+        }
 
         return updated;
     }
 
+    private void ScheduleModeTransitionTcpCommands(
+        Guid cunaId,
+        string centralDeviceId,
+        string targetMode,
+        long transitionEpoch,
+        CancellationTokenSource activeDispatchCts)
+    {
+        var ledColor = targetMode == "atencion" ? "yellow" : "green";
+        var durationSec = targetMode == "atencion" ? (int)_options.AttentionModeDuration.TotalSeconds : 0;
+
+        _ = Task.Run(async () =>
+        {
+            var tcpLock = _cribTcpDispatchLocks.GetOrAdd(cunaId, _ => new SemaphoreSlim(1, 1));
+            await tcpLock.WaitAsync(CancellationToken.None);
+            try
+            {
+                await SendCribCommandIfEpochCurrentAsync(
+                    cunaId, centralDeviceId, "alarm_set", new { on = false }, requireAck: true, transitionEpoch, activeDispatchCts);
+                await SendCribCommandIfEpochCurrentAsync(
+                    cunaId, centralDeviceId, "mode_set", new { mode = targetMode, duration_s = durationSec }, requireAck: true, transitionEpoch, activeDispatchCts);
+                await SendCribCommandIfEpochCurrentAsync(
+                    cunaId, centralDeviceId, "status_led", new { color = ledColor }, requireAck: false, transitionEpoch, activeDispatchCts);
+            }
+            catch (OperationCanceledException)
+            {
+                // Transición reemplazada por un cambio de modo más reciente
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Error enviando comandos TCP de transición de modo a {DeviceId}", centralDeviceId);
+            }
+            finally
+            {
+                tcpLock.Release();
+                ReleaseCribTcpDispatchCts(cunaId, activeDispatchCts);
+            }
+        }, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Inicia la ventana de gracia de 5 s (RF04/D10) sin reiniciar el temporizador si ya existe una en curso,
+    /// evitando que eventos repetidos de retiro posterguen indefinidamente la alarma crítica.
+    /// </summary>
     private void StartRemovalGraceWindow(Guid cunaId, Guid triggerDeviceId)
     {
-        CancelRemovalGraceWindow(cunaId);
+        if (_removalGraceWindows.ContainsKey(cunaId))
+        {
+            return;
+        }
 
         var cts = new CancellationTokenSource();
         if (!_removalGraceWindows.TryAdd(cunaId, cts))
@@ -519,81 +666,169 @@ public sealed class CribLiveControlService
             return;
         }
 
-        _ = Task.Run(async () =>
+        _ = Task.Run(() => ExecuteRemovalGraceWindowAsync(cunaId, triggerDeviceId, cts), CancellationToken.None);
+    }
+
+    private async Task ExecuteRemovalGraceWindowAsync(Guid cunaId, Guid triggerDeviceId, CancellationTokenSource cts)
+    {
+        try
         {
+            await Task.Delay(_options.RemovalGraceWindow, cts.Token);
+
+            var (alarmAlert, cribDispatchCts, alarmEpoch) = await TryEnterRemovalAlarmStateAsync(cunaId, triggerDeviceId, cts);
+            if (alarmAlert is null || cribDispatchCts is null)
+            {
+                if (cribDispatchCts is not null)
+                {
+                    ReleaseCribTcpDispatchCts(cunaId, cribDispatchCts);
+                }
+                return;
+            }
+
+            await DispatchRemovalAlarmNotificationsAsync(cunaId, alarmAlert, cribDispatchCts, alarmEpoch);
+        }
+        catch (OperationCanceledException)
+        {
+            // Ventana de gracia cancelada a tiempo por activación de Modo Atención (RF05)
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error en ventana de gracia RF04 para cuna {CunaId}", cunaId);
+        }
+        finally
+        {
+            cts.Dispose();
+        }
+    }
+
+    private async Task<(EventAlertRecord? Alert, CancellationTokenSource? DispatchCts, long Epoch)> TryEnterRemovalAlarmStateAsync(
+        Guid cunaId,
+        Guid triggerDeviceId,
+        CancellationTokenSource cts)
+    {
+        var cribLock = _cribModeLocks.GetOrAdd(cunaId, _ => new SemaphoreSlim(1, 1));
+        await cribLock.WaitAsync(CancellationToken.None);
+        try
+        {
+            if (!_removalGraceWindows.TryRemove(new KeyValuePair<Guid, CancellationTokenSource>(cunaId, cts)) ||
+                cts.IsCancellationRequested)
+            {
+                return (null, null, 0);
+            }
+
+            var crib = await _deviceRepo.GetCribByIdAsync(cunaId, CancellationToken.None);
+            if (crib is null || IsAttentionModeActive(crib, DateTimeOffset.UtcNow))
+            {
+                return (null, null, 0);
+            }
+
+            var alarmEpoch = _cribModeEpochs.AddOrUpdate(cunaId, 1, (_, prev) => prev + 1);
+            await _deviceRepo.UpdateCribModeAsync(cunaId, "alarma", null, CancellationToken.None);
+            var dispatchCts = ReplaceCribTcpDispatchCts(cunaId);
+
+            var alarmAlert = new EventAlertRecord(
+                Guid.NewGuid(),
+                cunaId,
+                triggerDeviceId,
+                "removal_alarm",
+                "critica",
+                "Alarma crítica (RF04): retiro imprevisto del infante sin pausa de seguridad tras 5 s.",
+                JsonSerializer.Serialize(new { kind = "removal_alarm", grace_s = _options.RemovalGraceWindow.TotalSeconds }),
+                DateTimeOffset.UtcNow);
+
+            return (alarmAlert, dispatchCts, alarmEpoch);
+        }
+        finally
+        {
+            cribLock.Release();
+        }
+    }
+
+    private async Task DispatchRemovalAlarmNotificationsAsync(
+        Guid cunaId,
+        EventAlertRecord alarmAlert,
+        CancellationTokenSource cribDispatchCts,
+        long alarmEpoch)
+    {
+        try
+        {
+            await _deviceRepo.SaveEventAlertAsync(alarmAlert, CancellationToken.None);
+            await TryDispatchTelegramAlertAsync(cunaId, alarmAlert, CancellationToken.None);
+
+            var central = await _deviceRepo.GetCentralDeviceForCribAsync(cunaId, CancellationToken.None);
+            if (central is null)
+            {
+                return;
+            }
+
+            var tcpLock = _cribTcpDispatchLocks.GetOrAdd(cunaId, _ => new SemaphoreSlim(1, 1));
+            await tcpLock.WaitAsync(CancellationToken.None);
             try
             {
-                await Task.Delay(_options.RemovalGraceWindow, cts.Token);
-
-                if (!_removalGraceWindows.TryRemove(new KeyValuePair<Guid, CancellationTokenSource>(cunaId, cts)))
-                {
-                    return;
-                }
-
-                var crib = await _deviceRepo.GetCribByIdAsync(cunaId, CancellationToken.None);
-                if (crib is null)
-                {
-                    return;
-                }
-
-                // Verificar una vez más que no se haya activado Modo Atención durante la ventana de gracia
-                var isAttentionActive =
-                    crib.ModoOperacion == "atencion" &&
-                    (!crib.ModoAtencionExpiraEn.HasValue || DateTimeOffset.UtcNow < crib.ModoAtencionExpiraEn.Value);
-                if (isAttentionActive)
-                {
-                    return;
-                }
-
-                await _deviceRepo.UpdateCribModeAsync(cunaId, "alarma", null, CancellationToken.None);
-
-                var alarmAlert = new EventAlertRecord(
-                    Guid.NewGuid(),
-                    cunaId,
-                    triggerDeviceId,
-                    "removal_alarm",
-                    "critica",
-                    "Alarma crítica (RF04): retiro imprevisto del infante sin pausa de seguridad tras 5 s.",
-                    JsonSerializer.Serialize(new { kind = "removal_alarm", grace_s = _options.RemovalGraceWindow.TotalSeconds }),
-                    DateTimeOffset.UtcNow);
-                await _deviceRepo.SaveEventAlertAsync(alarmAlert, CancellationToken.None);
-
-                if (_telegramService is not null)
-                {
-                    await _telegramService.DispatchAlertForCribAsync(cunaId, alarmAlert, CancellationToken.None);
-                }
-
-                var central = await _deviceRepo.GetCentralDeviceForCribAsync(cunaId, CancellationToken.None);
-                if (central is not null)
-                {
-                    await _tcpServer.SendCommandAsync(
-                        central.DeviceId,
-                        "alarm_set",
-                        new { on = true, reason = "removal" },
-                        requireAck: true,
-                        ct: CancellationToken.None);
-
-                    await _tcpServer.SendCommandAsync(
-                        central.DeviceId,
-                        "status_led",
-                        new { color = "red" },
-                        requireAck: false,
-                        ct: CancellationToken.None);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // Ventana de gracia cancelada a tiempo por activación de Modo Atención (RF05)
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error en ventana de gracia RF04 para cuna {CunaId}", cunaId);
+                await SendCribCommandIfEpochCurrentAsync(
+                    cunaId, central.DeviceId, "alarm_set", new { on = true, reason = "removal" }, requireAck: true, alarmEpoch, cribDispatchCts);
+                await SendCribCommandIfEpochCurrentAsync(
+                    cunaId, central.DeviceId, "status_led", new { color = "red" }, requireAck: false, alarmEpoch, cribDispatchCts);
             }
             finally
             {
-                cts.Dispose();
+                tcpLock.Release();
             }
-        }, CancellationToken.None);
+        }
+        finally
+        {
+            ReleaseCribTcpDispatchCts(cunaId, cribDispatchCts);
+        }
+    }
+
+    private async Task SendCribCommandIfEpochCurrentAsync(
+        Guid cunaId,
+        string deviceId,
+        string cmd,
+        object payload,
+        bool requireAck,
+        long expectedEpoch,
+        CancellationTokenSource dispatchCts)
+    {
+        if (dispatchCts.IsCancellationRequested || _cribModeEpochs.GetValueOrDefault(cunaId) != expectedEpoch)
+        {
+            return;
+        }
+
+        await _tcpServer.SendCommandAsync(deviceId, cmd, payload, requireAck, dispatchCts.Token);
+    }
+
+    private CancellationTokenSource ReplaceCribTcpDispatchCts(Guid cunaId)
+    {
+        var next = new CancellationTokenSource();
+        while (true)
+        {
+            if (!_cribTcpDispatchCts.TryGetValue(cunaId, out var existing))
+            {
+                if (_cribTcpDispatchCts.TryAdd(cunaId, next))
+                {
+                    return next;
+                }
+            }
+            else if (_cribTcpDispatchCts.TryUpdate(cunaId, next, existing))
+            {
+                try
+                {
+                    existing.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // El despacho anterior ya finalizó
+                }
+                return next;
+            }
+        }
+    }
+
+    private void ReleaseCribTcpDispatchCts(Guid cunaId, CancellationTokenSource dispatchCts)
+    {
+        _cribTcpDispatchCts.TryRemove(new KeyValuePair<Guid, CancellationTokenSource>(cunaId, dispatchCts));
+        dispatchCts.Dispose();
     }
 
     private void CancelRemovalGraceWindow(Guid cunaId)
@@ -611,59 +846,27 @@ public sealed class CribLiveControlService
         }
     }
 
-    private async Task<(UserMembership? Membership, CribRecord? Crib, string? ForbiddenMessage)> VerifyFamilyCribMembershipAsync(
+    private Task<(UserMembership? Membership, CribRecord? Crib, string? ForbiddenMessage)> VerifyFamilyCribMembershipAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
         string attemptedAction,
         bool requirePrincipal,
         string? clientIp,
         CancellationToken ct)
-    {
-        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
-        if (membership is null)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                null,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"sin_familia:{attemptedAction}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: el usuario no pertenece a una familia activa.");
-        }
-
-        if (requirePrincipal && !string.Equals(membership.Rol, UserRoles.Principal, StringComparison.Ordinal))
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"rol_secundario:{attemptedAction}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado (RF03): solo el Usuario Principal puede modificar umbrales.");
-        }
-
-        var crib = await _deviceRepo.GetCribByIdAsync(cunaId, ct);
-        if (crib is null || crib.FamilyId != membership.FamilyId)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"cuna_ajena:{attemptedAction}:{cunaId}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: la cuna solicitada no pertenece a tu familia.");
-        }
-
-        return (membership, crib, null);
-    }
+        => FamilyAuthorizationHelper.RequireFamilyCribAccessAsync(
+            _accountRepo,
+            _deviceRepo,
+            identity,
+            cunaId,
+            attemptedAction,
+            requirePrincipal,
+            clientIp,
+            ct);
 }
 
+/// <summary>
+/// Servicio en segundo plano que dispara periódicamente la evaluación del Watchdog RF20 y temporizadores RF05.
+/// </summary>
 public sealed class CribWatchdogBackgroundService : BackgroundService
 {
     private readonly CribLiveControlService _liveService;

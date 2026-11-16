@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
+using System.Text.RegularExpressions;
 using CunaServer.Data;
 using CunaServer.Services;
 using CunaServer.Telegram;
@@ -212,6 +213,252 @@ public class FeedingHistoryAndToysTests
         var csv = Encoding.UTF8.GetString(Convert.FromBase64String(export!.ContentBase64));
 
         Assert.Contains("bebe=\"'=cmd|' /C calc'!A0\"", csv);
+    }
+
+    [Fact]
+    public async Task RF32_PdfExport_PreservesSpanishDiacriticsWithWinAnsiEncoding()
+    {
+        await using var factory = CreateTestFactory(out _, out _, out _);
+        using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        var bootResp = await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia Tildes", "Mamá", "M1"));
+        var bootCtx = await bootResp.Content.ReadFromJsonAsync<AccountContextResponse>();
+        var profileId = bootCtx!.Perfiles[0].Id;
+
+        await client.PostAsync("/api/pairing/window", null);
+        var claimResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-central-nuevo",
+            "RECLAMO-CENTRAL-1001",
+            null,
+            "Cuna Principal"));
+        var claimed = await claimResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+
+        var babyResp = await client.PostAsJsonAsync("/api/babies", new UpsertBabyRequest(
+            claimed!.CunaId,
+            "Sofía Ñandú (Norte)",
+            new DateOnly(2026, 2, 10),
+            null));
+        Assert.Equal(HttpStatusCode.Created, babyResp.StatusCode);
+        var baby = await babyResp.Content.ReadFromJsonAsync<BabyRecord>();
+
+        var exportResp = await client.PostAsJsonAsync($"/api/babies/{baby!.Id}/history/export", new ExportHistoryRequest("pdf", null, null, profileId));
+        Assert.Equal(HttpStatusCode.OK, exportResp.StatusCode);
+        var export = await exportResp.Content.ReadFromJsonAsync<ExportHistoryResponse>();
+        var pdfLatin1 = Encoding.Latin1.GetString(Convert.FromBase64String(export!.ContentBase64));
+
+        Assert.Contains("/Encoding /WinAnsiEncoding", pdfLatin1);
+        Assert.Contains("Sofía Ñandú [Norte]", pdfLatin1);
+        Assert.Contains("Sesiones de sueño:", pdfLatin1);
+        Assert.DoesNotContain("Sof?a", pdfLatin1);
+    }
+
+    [Fact]
+    public async Task RF32_PdfExport_MultiPageWithValidXrefAndAllSessions()
+    {
+        await using var factory = CreateTestFactory(out _, out _, out _);
+        using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        var bootResp = await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia Multipagina", "Mamá", "M1"));
+        var bootCtx = await bootResp.Content.ReadFromJsonAsync<AccountContextResponse>();
+        var profileId = bootCtx!.Perfiles[0].Id;
+
+        await client.PostAsync("/api/pairing/window", null);
+        var claimResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-central-nuevo",
+            "RECLAMO-CENTRAL-1001",
+            null,
+            "Cuna Principal"));
+        var claimed = await claimResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+
+        var babyResp = await client.PostAsJsonAsync("/api/babies", new UpsertBabyRequest(
+            claimed!.CunaId,
+            "Mateo",
+            new DateOnly(2026, 1, 15),
+            null));
+        var baby = await babyResp.Content.ReadFromJsonAsync<BabyRecord>();
+
+        var tBase = new DateTimeOffset(2026, 3, 1, 8, 0, 0, TimeSpan.Zero);
+        for (var i = 0; i < 45; i++)
+        {
+            var resp = await client.PostAsJsonAsync($"/api/babies/{baby!.Id}/history/sleep", new CreateSleepSessionRequest(
+                claimed.CunaId,
+                i % 2 == 0 ? "noche" : "siesta",
+                tBase.AddHours(i * 2),
+                tBase.AddHours(i * 2).AddMinutes(45),
+                0.020m,
+                i % 3,
+                profileId));
+            Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        }
+
+        var exportResp = await client.PostAsJsonAsync($"/api/babies/{baby!.Id}/history/export", new ExportHistoryRequest("pdf", null, null, profileId));
+        Assert.Equal(HttpStatusCode.OK, exportResp.StatusCode);
+        var export = await exportResp.Content.ReadFromJsonAsync<ExportHistoryResponse>();
+        var pdfBytes = Convert.FromBase64String(export!.ContentBase64);
+        var pdfLatin1 = Encoding.Latin1.GetString(pdfBytes);
+
+        Assert.Contains("xref\n0 8\n", pdfLatin1);
+        Assert.Contains("/Size 8", pdfLatin1);
+        Assert.Contains("startxref\n", pdfLatin1);
+        Assert.Contains("/Count 2", pdfLatin1);
+        Assert.Contains("Pág. 1/2", pdfLatin1);
+        Assert.Contains("Pág. 2/2", pdfLatin1);
+        Assert.Contains("2026-03-01 08:00", pdfLatin1);
+        Assert.Contains("2026-03-05 00:00", pdfLatin1);
+    }
+
+    [Fact]
+    public async Task RF32_PdfExport_WrapsLongBabyNameAndFeedingAlertLinesWithinMargins()
+    {
+        await using var factory = CreateTestFactory(out _, out _, out _);
+        using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        var bootResp = await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia LargoNombre", "Mamá", "M1"));
+        var bootCtx = await bootResp.Content.ReadFromJsonAsync<AccountContextResponse>();
+        var profileId = bootCtx!.Perfiles[0].Id;
+
+        await client.PostAsync("/api/pairing/window", null);
+        var claimResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-central-nuevo",
+            "RECLAMO-CENTRAL-1001",
+            null,
+            "Cuna Principal"));
+        var claimed = await claimResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+
+        const string longBabyName = "Valentina Sofía Guadalupe del Carmen Hernández (CunaNorte)";
+        var babyResp = await client.PostAsJsonAsync("/api/babies", new UpsertBabyRequest(
+            claimed!.CunaId,
+            longBabyName,
+            new DateOnly(2026, 2, 1),
+            null));
+        Assert.Equal(HttpStatusCode.Created, babyResp.StatusCode);
+        var baby = await babyResp.Content.ReadFromJsonAsync<BabyRecord>();
+
+        var startResp = await client.PostAsJsonAsync("/api/feeding/sessions/start", new StartFeedingSessionRequest(
+            baby!.Id,
+            240.0m,
+            40.2m,
+            profileId));
+        Assert.Equal(HttpStatusCode.Created, startResp.StatusCode);
+        var started = await startResp.Content.ReadFromJsonAsync<FeedingSessionRecord>();
+
+        var finishResp = await client.PostAsJsonAsync($"/api/feeding/sessions/{started!.Id}/finish", new FinishFeedingSessionRequest(
+            137.0m,
+            profileId));
+        Assert.Equal(HttpStatusCode.OK, finishResp.StatusCode);
+
+        var tBase = new DateTimeOffset(2026, 4, 1, 8, 0, 0, TimeSpan.Zero);
+        for (var i = 0; i < 40; i++)
+        {
+            var resp = await client.PostAsJsonAsync($"/api/babies/{baby.Id}/history/sleep", new CreateSleepSessionRequest(
+                claimed.CunaId,
+                "siesta",
+                tBase.AddHours(i * 2),
+                tBase.AddHours(i * 2).AddMinutes(40),
+                0.015m,
+                0,
+                profileId));
+            Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        }
+
+        var exportResp = await client.PostAsJsonAsync($"/api/babies/{baby.Id}/history/export", new ExportHistoryRequest("pdf", null, null, profileId));
+        Assert.Equal(HttpStatusCode.OK, exportResp.StatusCode);
+        var export = await exportResp.Content.ReadFromJsonAsync<ExportHistoryResponse>();
+        var pdfLatin1 = Encoding.Latin1.GetString(Convert.FromBase64String(export!.ContentBase64));
+
+        Assert.Contains("Reporte Histórico Cuna Inteligente (RF32) - Pág. 1/2", pdfLatin1);
+        Assert.Contains("[ALERTA TEMP]", pdfLatin1);
+        Assert.Contains("[CunaNorte]", pdfLatin1);
+
+        var textCmdMatches = Regex.Matches(pdfLatin1, @"^1 0 0 1 50 (\d+) Tm \((.+)\) Tj$", RegexOptions.Multiline);
+        Assert.NotEmpty(textCmdMatches);
+
+        int? separatorY = null;
+        int? firstBodyAfterSeparatorY = null;
+        foreach (Match match in textCmdMatches)
+        {
+            var y = int.Parse(match.Groups[1].Value);
+            var text = match.Groups[2].Value;
+            Assert.True(y >= 50, $"Coordenada Y={y} invade el margen inferior para línea: {text}");
+            Assert.True(text.Length <= 92, $"Línea PDF excede 92 caracteres ({text.Length}): {text}");
+
+            if (text.StartsWith("----", StringComparison.Ordinal))
+            {
+                separatorY ??= y;
+            }
+            else if (separatorY is not null && firstBodyAfterSeparatorY is null)
+            {
+                firstBodyAfterSeparatorY = y;
+            }
+        }
+
+        Assert.NotNull(separatorY);
+        Assert.NotNull(firstBodyAfterSeparatorY);
+        Assert.Equal(24, separatorY.Value - firstBodyAfterSeparatorY.Value);
+    }
+
+    [Fact]
+    public async Task RF32_PdfExport_WrapsWideUppercaseAndOpenFeedingSessionWithinPageWidth()
+    {
+        await using var factory = CreateTestFactory(out _, out _, out _);
+        using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        var bootResp = await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia Anchura", "Mamá", "M1"));
+        var bootCtx = await bootResp.Content.ReadFromJsonAsync<AccountContextResponse>();
+        var profileId = bootCtx!.Perfiles[0].Id;
+
+        await client.PostAsync("/api/pairing/window", null);
+        var claimResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-central-nuevo",
+            "RECLAMO-CENTRAL-1001",
+            null,
+            "Cuna Principal"));
+        var claimed = await claimResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+
+        // 59 caracteres con mayúsculas anchas ('W') y tildes/eñes dentro del límite RF28 (<=60)
+        var wideBabyName = new string('W', 51) + " ÁÉÍÓÚÑ°";
+        var babyResp = await client.PostAsJsonAsync("/api/babies", new UpsertBabyRequest(
+            claimed!.CunaId,
+            wideBabyName,
+            new DateOnly(2026, 2, 1),
+            null));
+        Assert.Equal(HttpStatusCode.Created, babyResp.StatusCode);
+        var baby = await babyResp.Content.ReadFromJsonAsync<BabyRecord>();
+
+        // Toma abierta sin temperatura ni masa final (debe exportar N/D y no 0.0 °C)
+        var startOpenResp = await client.PostAsJsonAsync("/api/feeding/sessions/start", new StartFeedingSessionRequest(
+            baby!.Id,
+            180.0m,
+            null,
+            profileId));
+        Assert.Equal(HttpStatusCode.Created, startOpenResp.StatusCode);
+
+        var exportResp = await client.PostAsJsonAsync($"/api/babies/{baby.Id}/history/export", new ExportHistoryRequest("pdf", null, null, profileId));
+        Assert.Equal(HttpStatusCode.OK, exportResp.StatusCode);
+        var export = await exportResp.Content.ReadFromJsonAsync<ExportHistoryResponse>();
+        var pdfBytes = Convert.FromBase64String(export!.ContentBase64);
+        var pdfLatin1 = Encoding.Latin1.GetString(pdfBytes);
+
+        Assert.Contains("Final: N/D | Vol: N/D | T: N/D", pdfLatin1);
+        Assert.Contains("ÁÉÍÓÚÑ°", pdfLatin1);
+
+        var textCmdMatches = Regex.Matches(pdfLatin1, @"^1 0 0 1 50 (\d+) Tm \((.+)\) Tj$", RegexOptions.Multiline);
+        Assert.NotEmpty(textCmdMatches);
+        foreach (Match match in textCmdMatches)
+        {
+            var y = int.Parse(match.Groups[1].Value);
+            var lineText = match.Groups[2].Value;
+            Assert.True(y >= 50, $"Coordenada Y={y} invade el margen inferior para línea: {lineText}");
+            Assert.True(lineText.Length <= 92, $"Línea PDF excede 92 caracteres ({lineText.Length}): {lineText}");
+            // Estimación conservadora de ancho máximo: ninguna línea de 51 'W's queda sin envolver
+            Assert.True(
+                !lineText.Contains(new string('W', 51), StringComparison.Ordinal),
+                $"Línea con 51 'W' consecutivas excedería la caja útil de 512pt en Letter 612pt: {lineText}");
+        }
     }
 
     private sealed class FakeM7JwtValidator : IJwtTokenValidator

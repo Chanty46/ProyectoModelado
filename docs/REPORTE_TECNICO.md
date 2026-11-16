@@ -1,4 +1,4 @@
-# Reporte Técnico Final — Cuna Inteligente (Hitos M0–M10)
+# Reporte Técnico Final — Cuna Inteligente (Hitos M0–M11)
 
 **Proyecto:** Ecosistema Ciberfísico para Supervisión Perimetral, Microclima y Nutrición Infantil  
 **Curso:** Modelado y Programación / Ingeniería en Computadores  
@@ -157,39 +157,57 @@ El sistema cuenta con una batería completa de pruebas automáticas en todos los
 
 ```
 ===================================================================================
-SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES
+SUITE DE PRUEBAS AUTOMATIZADAS — RESULTADOS GLOBALES (HITO M11)
 ===================================================================================
 1. Backend C# (.NET 8 LTS — xUnit):
    - Archivo de solución: backend/CunaServer.sln
-   - Pruebas ejecutadas: 26 pruebas
-   - Estado: 26 PASADAS / 0 FALLIDAS (Duración: 1.0 s)
-   - Cobertura: Cuentas familiares, RLS, TCP framing, máquina de estados, watchdog,
-     bot de Telegram, spikes de audio, cálculo de ml, CSV sanitization y checklist E2E.
+   - Pruebas ejecutadas: 54 pruebas
+   - Estado: 54 PASADAS / 0 FALLIDAS (Duración: 1 s)
+   - Cobertura: Cuentas familiares, RLS, contratos HTTP PostgREST con mock
+     (PostgrestFamilyAccountRepository y PostgrestDeviceTelemetryRepository),
+     TCP framing (ArrayPool TcpLineReader + DeviceTcpServer UTF-8), máquina de estados, consolidación
+     multi-dispositivo, watchdog, bot de Telegram HTTP + deep-link /start + 429 retry,
+     spikes de audio, cálculo de ml, CSV sanitization, PDF WinAnsiEncoding + envoltura
+     por ancho en puntos Helvetica <= 500 pt / 92 columnas y checklist E2E.
 
 2. Simuladores TCP (Python 3 — unittest):
    - Módulo: simulators/test_simulators.py
-   - Pruebas ejecutadas: 7 pruebas
-   - Estado: 7 PASADAS / 0 FALLIDAS (Duración: 0.002 s)
-   - Cobertura: Detección de retiro <= 1 s, filtro de ruido 5 Hz, rampa de luz PWM,
-     decodificación PCM de audio, rechazo de tramas > 4 KB y backoff exponencial <= 30 s.
+   - Pruebas ejecutadas: 10 pruebas
+   - Estado: 10 PASADAS / 0 FALLIDAS (Duración: 0.027 s)
+   - Cobertura: Detección de retiro <= 1 s, filtro de ruido 5 Hz O(1), rampa de luz PWM,
+     decodificación PCM de audio, rechazo de tramas > 4 KB, estrés 10000 ticks,
+     backoff <= 30 s y manejo de comandos intercalados antes del ack.
 
 3. Firmware MicroPython (RP2040 — unittest):
    - Módulo: firmware/test_firmware.py
-   - Pruebas ejecutadas: 6 pruebas
-   - Estado: 6 PASADAS / 0 FALLIDAS (Duración: 0.013 s)
+   - Pruebas ejecutadas: 7 pruebas
+   - Estado: 7 PASADAS / 0 FALLIDAS (Duración: 0.009 s)
    - Cobertura: Asignación de pines RP2040 (GPIO 0-28), búfer circular de 48 h (2880 reg),
-     máquina de estados de los 5 nodos y vaciado TCP con acks del servidor.
+     máquina de estados de los 5 nodos, compatibilidad de notas SQL/memoria y vaciado TCP.
 
-4. Frontend React (TypeScript + Vite):
-   - Verificación de tipos: tsc --noEmit (0 ERRORES)
-   - Empaquetado de producción: vite build (0 ADVERTENCIAS, 2097 módulos transformados)
+4. Frontend React (TypeScript + Node Test + Vitest + Vite):
+   - Pruebas unitarias de helpers: formatters.test.ts (9 PASADAS / 0 FALLIDAS)
+   - Pruebas interactivas de componentes UI (Vitest + JSDOM + Testing Library): 34 PASADAS / 0 FALLIDAS en 5 archivos (`CribAndDeviceManager.test.tsx`, `FeedingToysAndHistoryPanel.test.tsx`, `LiveCribPanel.test.tsx`, `TelegramAndRemindersPanel.test.tsx`, `OtherPanels.test.tsx`)
+   - Total Frontend (`npm test`): 43 PASADAS / 0 FALLIDAS
+   - Verificación de tipos: tsc --noEmit / tsc -b (0 ERRORES)
+   - Empaquetado de producción: vite build (2098 módulos transformados)
 
-5. Auditoría de Seguridad (git grep):
+5. Diagnóstico y Validación Telegram Bot API (scripts/test_telegram.py):
+   - Mock HTTP Bot API (`--mock`): getMe + sendMessage chat_id=990001234 [OK]
+
+6. Auditoría de Seguridad (verify_environment.py):
    - Escaneo de secretos reales (sb_secret, tokens, contraseñas): 0 COINCIDENCIAS
 ===================================================================================
-TOTAL: 39 pruebas automáticas ejecutadas con 100 % de éxito.
+TOTAL: 114 pruebas automáticas + verificación HTTP Bot API mock con 100 % de éxito.
 ===================================================================================
 ```
+
+### 4.1 Métricas de Rendimiento y Refinamiento Técnico (Hito M11)
+- **Parser TCP (`TcpLineReader` con `ArrayPool<byte>` y serialización UTF-8 directa en `DeviceTcpServer`)**: `10 000` líneas procesadas en `3.38 ms` (`2 958 055 líneas/s`); validación completa de `10 000` sobres `TcpProtocolParser` (telemetría + eventos) en `49.47 ms` (`202 128 sobres/s`).
+- **Validación JWT ES256 con caché JWKS (`CachedJwksSnapshot`)**: `2 000` verificaciones en `105.46 ms` (`18 965 ops/s`).
+- **Latencia de consulta en vivo (`GET /api/cribs/{id}/live`)**: `50` consultas en `30.31 ms` (promedio `0.61 ms/req`).
+- **Exportación RF32 (CSV + PDF, 120 registros)**: `21.17 ms` (presupuesto `< 10 000 ms`); PDF multipágina verificado con `pdfinfo`/`pdftotext`/`pdftoppm` (Letter 612x792 pts, envoltura proporcional Helvetica <= 500 pt / <= 92 columnas, margen inferior >= 50 pt).
+- **Higiene, UI y robustez**: helper unificado de autorización familiar y endpoints, límite en colas de telemetría/alertas/auditoría en memoria, eliminación de consultas N+1 hacia PostgREST de Telegram, prevención de sobrescritura de sliders al editar en frontend, soporte real de micrófono Web Audio API en el intercomunicador, placeholders esqueletizados animados durante la carga de telemetría, disposición responsiva `<540 px` y contraste accesible WCAG AA, corrección de autocierre del formulario de umbrales (`showThresholdsFormRef`), parseo estricto de entradas numéricas opcionales (`parseOptionalFiniteNumber` evitando alertas falsas `0.0 °C`), ajuste de anchura en puntos y cota de encabezados en PDF RF32 (sin falsos `0.0 °C` en tomas abiertas), disposición determinista de `JsonDocument` en auditoría PostgREST y filtro explícito `family_id` en lectura de umbrales.
 
 ---
 
@@ -233,7 +251,7 @@ El recorrido guiado para la presentación frente al tribunal examinador se encue
 
 ## 7. Conclusiones
 
-El proyecto **Cuna Inteligente** cumple con todos los objetivos planteados en los hitos M0 a M10:
+El proyecto **Cuna Inteligente** cumple con todos los objetivos planteados en los hitos M0 a M11:
 1. **Robusto**: Implementa tolerancia a fallos, búfer offline de 48 horas en MicroPython y reconexión automática sin pérdida de datos.
 2. **Seguro**: Control de acceso granular por RLS, validación estricta de entradas y neutralización de fugas de información sensible.
 3. **Mantenible y Verificable**: Cobertura completa de pruebas unitarias, de integración y extremo a extremo ejecutables localmente con feedback inmediato.

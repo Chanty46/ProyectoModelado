@@ -223,6 +223,140 @@ public class CribLiveControlTests
         Assert.Contains(auditLogs, e => e.Evento == "acceso_denegado_403" && e.UsuarioId == SecondaryUserId);
     }
 
+    [Fact]
+    public async Task MultiDeviceTelemetry_ConsolidatesLatestFieldsAcrossCentralAndColchon()
+    {
+        await using var factory = CreateTestFactory(new CribLiveControlOptions(), out _, out var deviceRepo);
+        using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia MultiNodo", "Mamá", "M1"));
+        await client.PostAsync("/api/pairing/window", null);
+
+        var claimCentralResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-central-nuevo",
+            "RECLAMO-CENTRAL-1001",
+            null,
+            "Cuna Multi"));
+        var claimedCentral = await claimCentralResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+        var cunaId = claimedCentral!.CunaId;
+
+        var claimColchonResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-colchon-nuevo",
+            "RECLAMO-COLCHON-1002",
+            cunaId,
+            null));
+        var claimedColchon = await claimColchonResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+
+        var t0 = DateTimeOffset.UtcNow.AddSeconds(-20);
+        // Ambos dispositivos inician con seq=1; primero colchón, después central, luego biberón simulado
+        await deviceRepo.SaveTelemetryAsync(new TelemetryRecord(
+            cunaId, claimedColchon!.DeviceRowId, t0, 0.720m, 0.042m, null, null, null, null, 98, 1), CancellationToken.None);
+        await deviceRepo.SaveTelemetryAsync(new TelemetryRecord(
+            cunaId, claimedCentral.DeviceRowId, t0.AddSeconds(5), null, null, 22.8m, 49.5m, null, null, null, 1), CancellationToken.None);
+
+        var live = await client.GetFromJsonAsync<LiveCribStatusResponse>($"/api/cribs/{cunaId}/live");
+        Assert.NotNull(live);
+        Assert.NotNull(live!.UltimaTelemetria);
+        Assert.Equal(0.720m, live.UltimaTelemetria!.MasaKg);
+        Assert.Equal(0.042m, live.UltimaTelemetria.IndiceMovimiento);
+        Assert.Equal(22.8m, live.UltimaTelemetria.TempC);
+        Assert.Equal(49.5m, live.UltimaTelemetria.Humedad);
+        Assert.Equal(2, live.TelemetriaReciente.Count);
+        Assert.True(live.TelemetriaReciente[0].Ts <= live.TelemetriaReciente[1].Ts);
+    }
+
+    [Fact]
+    public async Task CriticalModeCommands_RequireAckWithRetry_And_DoNotBlockHttpEndpoint()
+    {
+        var accRepo = new InMemoryFamilyAccountRepository();
+        var devRepo = new InMemoryDeviceTelemetryRepository();
+        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.AddSingleton<IFamilyAccountRepository>(accRepo);
+                services.AddSingleton<IDeviceTelemetryRepository>(devRepo);
+                services.AddSingleton<IJwtTokenValidator>(new FakeLiveJwtValidator());
+                services.AddSingleton(new CribLiveControlOptions
+                {
+                    RemovalGraceWindow = TimeSpan.FromSeconds(5),
+                    AttentionModeDuration = TimeSpan.FromSeconds(900),
+                    WatchdogTimeout = TimeSpan.FromSeconds(60)
+                });
+                services.AddSingleton(new DeviceTcpServerOptions
+                {
+                    BindAddress = IPAddress.Loopback,
+                    Port = 0,
+                    AckTimeout = TimeSpan.FromMilliseconds(120)
+                });
+            });
+        });
+
+        using var client = factory.CreateClient();
+        var tcpServer = factory.Services.GetRequiredService<DeviceTcpServer>();
+        var tcpPort = await tcpServer.WaitForBoundPortAsync();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "token-principal");
+        await client.PostAsJsonAsync("/api/account/bootstrap", new BootstrapAccountRequest("Familia Retry", "Mamá", "F1"));
+        await client.PostAsync("/api/pairing/window", null);
+        var claimResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(
+            "pico-central-nuevo",
+            "RECLAMO-CENTRAL-1001",
+            null,
+            "Cuna Retry"));
+        var claimed = await claimResp.Content.ReadFromJsonAsync<ClaimDeviceResponse>();
+
+        using var centralTcp = new TcpClient();
+        await centralTcp.ConnectAsync("127.0.0.1", tcpPort);
+        await using var stream = centralTcp.GetStream();
+        using var reader = new StreamReader(stream, new UTF8Encoding(false), leaveOpen: true);
+        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+
+        await writer.WriteLineAsync(
+            $$"""{"v":1,"t":"hello","seq":1,"ts":1762560000,"d":{"device_id":"pico-central-nuevo","device_type":"central","token":"{{claimed!.DeviceTokenOnce}}","fw":"1.0.0"} }""");
+        var helloAck = await reader.ReadLineAsync();
+        Assert.Contains("\"t\":\"hello_ack\"", helloAck);
+
+        // El endpoint HTTP debe responder rápido (< 200 ms) sin esperar los reintentos TCP ni el ACK del dispositivo
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var modeResp = await client.PostAsJsonAsync($"/api/cribs/{claimed.CunaId}/mode", new SetCribModeRequest("atencion"));
+        sw.Stop();
+        Assert.Equal(HttpStatusCode.OK, modeResp.StatusCode);
+        Assert.True(sw.ElapsedMilliseconds < 250, $"POST /mode tardó {sw.ElapsedMilliseconds} ms y no debe bloquear en TCP");
+
+        // Central omite ACK en el 1er alarm_set -> servidor debe reintentar el mismo cmdId antes de pasar a mode_set
+        var line1 = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.NotNull(line1);
+        using var doc1 = System.Text.Json.JsonDocument.Parse(line1!);
+        Assert.Equal("alarm_set", doc1.RootElement.GetProperty("d").GetProperty("cmd").GetString());
+        var alarmCmdId = doc1.RootElement.GetProperty("d").GetProperty("id").GetString();
+
+        var line2 = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.NotNull(line2);
+        using var doc2 = System.Text.Json.JsonDocument.Parse(line2!);
+        Assert.Equal("alarm_set", doc2.RootElement.GetProperty("d").GetProperty("cmd").GetString());
+        Assert.Equal(alarmCmdId, doc2.RootElement.GetProperty("d").GetProperty("id").GetString());
+
+        // Confirmar alarm_set -> llega mode_set y lo confirmamos
+        await writer.WriteLineAsync($$"""{"v":1,"t":"ack","seq":2,"ts":1762560001,"d":{"id":"{{alarmCmdId}}","ok":true} }""");
+
+        var line3 = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.NotNull(line3);
+        using var doc3 = System.Text.Json.JsonDocument.Parse(line3!);
+        Assert.Equal("mode_set", doc3.RootElement.GetProperty("d").GetProperty("cmd").GetString());
+        Assert.Equal("atencion", doc3.RootElement.GetProperty("d").GetProperty("params").GetProperty("mode").GetString());
+        var modeCmdId = doc3.RootElement.GetProperty("d").GetProperty("id").GetString();
+
+        await writer.WriteLineAsync($$"""{"v":1,"t":"ack","seq":3,"ts":1762560002,"d":{"id":"{{modeCmdId}}","ok":true} }""");
+
+        var line4 = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.NotNull(line4);
+        using var doc4 = System.Text.Json.JsonDocument.Parse(line4!);
+        Assert.Equal("status_led", doc4.RootElement.GetProperty("d").GetProperty("cmd").GetString());
+        Assert.Equal("yellow", doc4.RootElement.GetProperty("d").GetProperty("params").GetProperty("color").GetString());
+    }
+
     private sealed class FakeLiveJwtValidator : IJwtTokenValidator
     {
         public Task<AuthenticatedIdentity?> ValidateBearerTokenAsync(string? authorizationHeader, CancellationToken ct)

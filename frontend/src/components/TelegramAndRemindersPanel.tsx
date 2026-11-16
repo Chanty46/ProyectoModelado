@@ -1,12 +1,23 @@
 import { useState, useEffect, useCallback, type FormEvent } from "react";
-import { MessageSquare, Clock, Copy, Check, Unlink } from "lucide-react";
+import {
+  MessageSquare,
+  Clock,
+  Copy,
+  Check,
+  Unlink,
+  Send,
+  ExternalLink,
+} from "lucide-react";
 import {
   accountApi,
   ApiError,
   type TelegramLinkStatusResponse,
   type GenerateTelegramCodeResponse,
+  type TelegramBotStatusResponse,
+  type TelegramTestMessageResponse,
   type FeedingReminderRecord,
 } from "../lib/api";
+import { buildTelegramDeepLink } from "../lib/formatters";
 
 interface TelegramAndRemindersPanelProps {
   accessToken: string;
@@ -20,8 +31,11 @@ export function TelegramAndRemindersPanel({
   onError,
 }: TelegramAndRemindersPanelProps) {
   const [linkStatus, setLinkStatus] = useState<TelegramLinkStatusResponse | null>(null);
+  const [botStatus, setBotStatus] = useState<TelegramBotStatusResponse | null>(null);
   const [generatedCode, setGeneratedCode] = useState<GenerateTelegramCodeResponse | null>(null);
   const [copiedCommand, setCopiedCommand] = useState(false);
+  const [testResult, setTestResult] = useState<TelegramTestMessageResponse | null>(null);
+  const [isSendingTest, setIsSendingTest] = useState(false);
 
   const [reminder, setReminder] = useState<FeedingReminderRecord | null>(null);
   const [intervalHours, setIntervalHours] = useState<number>(3);
@@ -32,11 +46,13 @@ export function TelegramAndRemindersPanel({
 
   const loadData = useCallback(async () => {
     try {
-      const [status, rem] = await Promise.all([
+      const [status, botStat, rem] = await Promise.all([
         accountApi.getTelegramLink(accessToken),
+        accountApi.getTelegramStatus(accessToken),
         accountApi.getFeedingReminder(accessToken),
       ]);
       setLinkStatus(status);
+      setBotStatus(botStat);
       setReminder(rem);
       setIntervalHours(rem.intervaloHoras);
       setReminderActive(rem.activo);
@@ -53,6 +69,7 @@ export function TelegramAndRemindersPanel({
 
   async function handleGenerateCode() {
     onError(null);
+    setTestResult(null);
     setIsGeneratingCode(true);
     try {
       const res = await accountApi.generateTelegramLinkCode(accessToken);
@@ -68,12 +85,32 @@ export function TelegramAndRemindersPanel({
     }
   }
 
+  async function handleSendTestMessage() {
+    onError(null);
+    setTestResult(null);
+    setIsSendingTest(true);
+    try {
+      const res = await accountApi.sendTelegramTest(accessToken);
+      setTestResult(res);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        onError(err.message);
+      }
+    } finally {
+      setIsSendingTest(false);
+    }
+  }
+
   async function handleCopyCommand() {
     if (!generatedCode) {
       return;
     }
-    await navigator.clipboard.writeText(generatedCode.comandoEjemplo);
-    setCopiedCommand(true);
+    try {
+      await navigator.clipboard.writeText(generatedCode.comandoEjemplo);
+      setCopiedCommand(true);
+    } catch {
+      onError("No se pudo copiar el comando automáticamente al portapapeles.");
+    }
   }
 
   async function handleUnlinkTelegram() {
@@ -134,36 +171,109 @@ export function TelegramAndRemindersPanel({
           </span>
         </div>
 
-        <p className="text-xs text-slate-600">
-          Vincula tu cuenta de Telegram personal con{" "}
-          <span className="font-mono font-semibold text-slate-800">
-            @CunasInteligentes_Modelado_Bot
-          </span>{" "}
-          para recibir alertas críticas redundantes (RF19) y consultar{" "}
-          <code className="font-mono">/estado</code> en &lt; 2 s (RF39).
-        </p>
+        <div className="space-y-2">
+          <p className="text-xs text-slate-600">
+            Vincula tu cuenta de Telegram personal con{" "}
+            <span className="font-mono font-semibold text-slate-800">
+              {botStatus?.resolvedUsername ?? botStatus?.botUsername ?? "@CunasInteligentes_Modelado_Bot"}
+            </span>{" "}
+            para recibir alertas críticas redundantes (RF19) y consultar{" "}
+            <code className="font-mono">/estado</code> en &lt; 2 s (RF39).
+          </p>
+
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-600 text-[10px] font-bold text-white">1</span>
+              <p className="mt-1 text-[11px] font-semibold text-slate-800">Genera código</p>
+              <p className="text-[10px] text-slate-500">Vigencia 10 min</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-600 text-[10px] font-bold text-white">2</span>
+              <p className="mt-1 text-[11px] font-semibold text-slate-800">Envía /start</p>
+              <p className="text-[10px] text-slate-500">En @CunasInteligentes</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-teal-600 text-[10px] font-bold text-white">3</span>
+              <p className="mt-1 text-[11px] font-semibold text-slate-800">Usa /estado</p>
+              <p className="text-[10px] text-slate-500">Alertas en vivo &lt; 2 s</p>
+            </div>
+          </div>
+
+          {botStatus && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px]">
+              <span
+                className={`inline-flex items-center gap-1.5 font-medium ${
+                  botStatus.tokenConfigured && botStatus.botReachable
+                    ? "text-emerald-700"
+                    : "text-amber-700"
+                }`}
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    botStatus.tokenConfigured && botStatus.botReachable
+                      ? "bg-emerald-500"
+                      : "bg-amber-500"
+                  }`}
+                />
+                {botStatus.tokenConfigured && botStatus.botReachable
+                  ? "Bot Telegram HTTP activo"
+                  : botStatus.tokenConfigured
+                  ? "Token configurado (sin conexión HTTP)"
+                  : "Modo simulación local (sin TELEGRAM_BOT_TOKEN)"}
+              </span>
+              <span className="text-slate-500">
+                Requiere <code className="font-mono">/start</code> previo (usa Chat ID, no teléfono)
+              </span>
+            </div>
+          )}
+        </div>
 
         {linkStatus?.vinculado ? (
-          <div className="flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
-            <div>
-              <p className="text-xs font-semibold text-emerald-900">
-                Chat ID #{linkStatus.chatId} activo
-              </p>
-              {linkStatus.vinculadoEn && (
-                <p className="text-[11px] text-emerald-800">
-                  Vinculado el {new Date(linkStatus.vinculadoEn).toLocaleString()}
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
+              <div>
+                <p className="text-xs font-semibold text-emerald-900">
+                  Chat ID #{linkStatus.chatId} activo
                 </p>
-              )}
+                {linkStatus.vinculadoEn && (
+                  <p className="text-[11px] text-emerald-800">
+                    Vinculado el {new Date(linkStatus.vinculadoEn).toLocaleString()}
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isSendingTest}
+                  onClick={handleSendTestMessage}
+                  className="inline-flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
+                >
+                  <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                  {isSendingTest ? "Enviando..." : "Enviar mensaje de prueba"}
+                </button>
+                <button
+                  type="button"
+                  disabled={isUnlinking}
+                  onClick={handleUnlinkTelegram}
+                  className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
+                >
+                  <Unlink className="h-3.5 w-3.5" aria-hidden="true" />
+                  {isUnlinking ? "Desvinculando..." : "Desvincular"}
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              disabled={isUnlinking}
-              onClick={handleUnlinkTelegram}
-              className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
-            >
-              <Unlink className="h-3.5 w-3.5" aria-hidden="true" />
-              {isUnlinking ? "Desvinculando..." : "Desvincular"}
-            </button>
+
+            {testResult && (
+              <p
+                className={`rounded-lg border px-3 py-2 text-xs ${
+                  testResult.sent
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    : "border-amber-200 bg-amber-50 text-amber-800"
+                }`}
+              >
+                {testResult.message} (modo: <span className="font-mono">{testResult.mode}</span>)
+              </p>
+            )}
           </div>
         ) : (
           <button
@@ -179,17 +289,17 @@ export function TelegramAndRemindersPanel({
         )}
 
         {generatedCode && (
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2.5">
             <p className="text-[11px] font-medium text-slate-700">
               Envía este comando a <span className="font-mono">{generatedCode.botUsername}</span>{" "}
               antes de las {new Date(generatedCode.expiraEn).toLocaleTimeString()}:
             </p>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <input
                 type="text"
                 readOnly
                 value={generatedCode.comandoEjemplo}
-                className="flex-1 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-mono text-slate-900"
+                className="flex-1 min-w-[180px] rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-mono text-slate-900"
               />
               <button
                 type="button"
@@ -208,6 +318,18 @@ export function TelegramAndRemindersPanel({
                   </>
                 )}
               </button>
+              <a
+                href={
+                  generatedCode.deepLinkUrl ??
+                  buildTelegramDeepLink(generatedCode.botUsername, generatedCode.codigo)
+                }
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded bg-teal-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-700"
+              >
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                Abrir en Telegram
+              </a>
             </div>
           </div>
         )}
@@ -239,23 +361,41 @@ export function TelegramAndRemindersPanel({
           El servicio en segundo plano evalúa el tiempo transcurrido desde la última toma y notifica por el panel y Telegram cuando se cumple el intervalo (1 a 8 horas).
         </p>
 
-        <form onSubmit={handleSaveReminder} className="space-y-3 pt-2 border-t border-slate-100">
-          <div className="flex items-center justify-between gap-4">
-            <label htmlFor="reminder-interval" className="text-xs font-medium text-slate-700">
-              Intervalo entre tomas (1–8 horas):
-            </label>
-            <select
-              id="reminder-interval"
-              value={intervalHours}
-              onChange={(e) => setIntervalHours(Number(e.target.value))}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
-            >
-              {[1, 2, 3, 4, 5, 6, 7, 8].map((h) => (
-                <option key={h} value={h}>
-                  Cada {h} {h === 1 ? "hora" : "horas"}
-                </option>
+        <form onSubmit={handleSaveReminder} className="space-y-3.5 pt-2 border-t border-slate-100">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-4">
+              <label htmlFor="reminder-interval" className="text-xs font-medium text-slate-700">
+                Intervalo entre tomas (1–8 horas):
+              </label>
+              <select
+                id="reminder-interval"
+                value={intervalHours}
+                onChange={(e) => setIntervalHours(Number(e.target.value))}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+              >
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((h) => (
+                  <option key={h} value={h}>
+                    Cada {h} {h === 1 ? "hora" : "horas"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-wrap gap-1.5" aria-label="Accesos rápidos de intervalo">
+              {[2, 3, 4, 6, 8].map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  onClick={() => setIntervalHours(h)}
+                  className={`rounded-lg px-2.5 py-1 text-[11px] font-medium border transition-colors ${
+                    intervalHours === h
+                      ? "border-teal-600 bg-teal-50 text-teal-800"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {h}h
+                </button>
               ))}
-            </select>
+            </div>
           </div>
 
           <label className="inline-flex items-center gap-2 text-xs text-slate-700">

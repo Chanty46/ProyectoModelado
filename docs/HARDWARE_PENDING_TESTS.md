@@ -20,7 +20,7 @@ Los siguientes puntos requieren las placas físicas **Raspberry Pi Pico W** y se
 ## 3. Verificación Acústica (`≤ 65 dBA`) y Filtro RC + PAM8403 (`central`)
 - **Archivos**: `firmware/central/main.py`, `firmware/common/pins.py`
 - **Procedimiento físico**:
-  1. Conectar la salida PWM `GP16` al filtro pasa-bajos RC (`R = 1.8 kΩ`, `C = 10 nF`, $f_c \approx 8.8\text{ kHz}$) y a la entrada del amplificador **PAM8403** con parlante de `8 Ω`.
+  1. Conectar la salida PWM `GP16` al filtro pasa-bajos RC (`R = 1 kΩ`, `C = 100 nF`, $f_c \approx 1.59\text{ kHz}$) y a la entrada del amplificador **PAM8403** con parlante de `8 Ω`.
   2. Medir con sonómetro a la distancia de la cuna y ajustar el potenciómetro físico del PAM8403 para que ni las melodías (`song_play`) ni el intercomunicador (`audio_chunk`) ni la alarma local superen **65 dBA** (`RNF08`).
 
 ## 4. Verificación de Alimentación 3.3 V en Termómetro IR `MLX90614` (`biberon`)
@@ -31,4 +31,4 @@ Los siguientes puntos requieren las placas físicas **Raspberry Pi Pico W** y se
 ## 5. Divisor Resistivo ADC para Batería de 3 Pilas AA (`biberon` y `juguete`)
 - **Archivos**: `firmware/common/hal.py` (`BatteryAdcAdapter`)
 - **Procedimiento físico**:
-  1. Conectar el paquete de 3 pilas AA (`3.0 V` descargadas a `4.5 V` nuevas) a `GP26 (ADC0)` mediante un divisor resistivo `2:1` (p. ej., `10 kΩ + 10 kΩ`) para que el voltaje en el pin ADC nunca supere `3.3 V`.
+  1. Conectar el paquete de 3 pilas AA (`3.0 V` descargadas a `4.5 V` nuevas) a `GP26 (ADC0)` mediante un divisor resistivo `2:1` (`100 kΩ + 100 kΩ` de bajo consumo de repositorio) para que el voltaje en el pin ADC nunca supere `3.3 V`.

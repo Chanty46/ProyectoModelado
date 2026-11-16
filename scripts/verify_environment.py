@@ -6,6 +6,7 @@ antes de la defensa o demostración del proyecto.
 """
 
 from __future__ import annotations
+
 import os
 import re
 import subprocess
@@ -20,12 +21,26 @@ CYAN = "\033[96m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
+REQUIRED_TOOLS = [
+    (["dotnet", "--version"], r"^8\.", ".NET 8 SDK"),
+    (["node", "--version"], r"^v(18|20|22|24)", "Node.js (>= 18)"),
+    (["npm", "--version"], r"^[0-9]+", "npm"),
+    (["python3", "--version"], r"^Python 3\.(1[0-9]|[2-9][0-9])", "Python 3.10+"),
+]
+
+# Patrón de detección de secretos reales en el árbol rastreado por Git
+FORBIDDEN_SECRET_PATTERN = (
+    "(sb_secret_[A-Za-z0-9]{10}|GOCSPX-[A-Za-z0-9]{5}|" + "AAGel" + "Nrz|" + "Pr0y" + "3ct0)"
+)
+
 
 def print_step(title: str) -> None:
+    """Imprime el encabezado visual de cada etapa de verificación."""
     print(f"\n{BOLD}{CYAN}==> {title}{RESET}")
 
 
 def run_command(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
+    """Ejecuta un subproceso capturando stdout/stderr combinados sin lanzar excepción."""
     try:
         proc = subprocess.run(
             cmd,
@@ -36,30 +51,14 @@ def run_command(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
             check=False,
         )
         return proc.returncode, proc.stdout
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - reporta el fallo al resumen final
         return 1, str(exc)
 
 
-def main() -> int:
-    repo_root = Path(__file__).resolve().parent.parent
-    os.chdir(repo_root)
-
-    print(f"{BOLD}Verificador Integral de Entorno — Cuna Inteligente (M10){RESET}")
-    print(f"Directorio raíz: {repo_root}")
-
-    failures: list[str] = []
-
-    # 1. Comprobar herramientas requeridas
+def _check_system_tools(failures: list[str]) -> None:
+    """Verifica que .NET 8, Node.js, npm y Python 3 estén instalados en versiones válidas."""
     print_step("1. Verificando herramientas y versiones del sistema")
-
-    tools = [
-        (["dotnet", "--version"], r"^8\.", ".NET 8 SDK"),
-        (["node", "--version"], r"^v(18|20|22|24)", "Node.js (>= 18)"),
-        (["npm", "--version"], r"^[0-9]+", "npm"),
-        (["python3", "--version"], r"^Python 3\.(1[0-9]|[2-9][0-9])", "Python 3.10+"),
-    ]
-
-    for cmd, pattern, label in tools:
+    for cmd, pattern, label in REQUIRED_TOOLS:
         code, out = run_command(cmd)
         version_str = out.strip()
         if code == 0 and re.search(pattern, version_str):
@@ -68,9 +67,10 @@ def main() -> int:
             print(f"  [{RED}FALLO{RESET}] {label} no cumple los requisitos (salida: {version_str})")
             failures.append(f"Herramienta {label}")
 
-    # 2. Verificación estricta de seguridad contra secretos
-    print_step("2. Verificando reglas de seguridad (SECURITY.md)")
 
+def _check_security_rules(repo_root: Path, failures: list[str]) -> None:
+    """Valida que no existan archivos `.env`/`secrets.py` ni patrones reales en Git."""
+    print_step("2. Verificando reglas de seguridad (SECURITY.md)")
     untracked_secret_files = [
         repo_root / "backend" / ".env",
         repo_root / "frontend" / ".env",
@@ -78,7 +78,10 @@ def main() -> int:
     ]
     for sec_file in untracked_secret_files:
         if sec_file.exists():
-            print(f"  [{YELLOW}AVISO{RESET}] Archivo local de secretos presente: {sec_file.name} (verificar que no esté en Git)")
+            print(
+                f"  [{YELLOW}AVISO{RESET}] Archivo local de secretos presente: "
+                f"{sec_file.name} (verificar que no esté en Git)"
+            )
 
     code, git_tracked = run_command(["git", "ls-files", "*.env", "*secrets.py"])
     if code == 0 and git_tracked.strip():
@@ -87,12 +90,14 @@ def main() -> int:
     else:
         print(f"  [{GREEN}OK{RESET}] Ningún secreto rastreado en Git.")
 
-    # Escaneo de patrones de tokens
-    forbidden_pattern = "(sb_secret_[A-Za-z0-9]{10}|GOCSPX-[A-Za-z0-9]{5}|" + "AAGel" + "Nrz|" + "Pr0y" + "3ct0)"
     code, grep_out = run_command([
-        "git", "grep", "-iE", forbidden_pattern, "--",
+        "git",
+        "grep",
+        "-iE",
+        FORBIDDEN_SECRET_PATTERN,
+        "--",
         ":^scripts/verify_environment.py",
-        ":^backend/CunaServer.Tests/EndToEndAndSecurityChecklistTests.cs"
+        ":^backend/CunaServer.Tests/EndToEndAndSecurityChecklistTests.cs",
     ])
     if code == 0 and grep_out.strip():
         print(f"  [{RED}CRÍTICO{RESET}] Posibles credenciales reales detectadas en el código:\n{grep_out}")
@@ -100,62 +105,121 @@ def main() -> int:
     else:
         print(f"  [{GREEN}OK{RESET}] Escaneo de código libre de patrones de secretos reales.")
 
-    # 3. Pruebas Backend .NET
-    print_step("3. Ejecutando pruebas unitarias y de integración de Backend (.NET 8)")
-    code, out = run_command(["dotnet", "test", "backend/CunaServer.sln", "--verbosity", "minimal"])
-    if code == 0:
-        print(f"  [{GREEN}OK{RESET}] Todas las pruebas de CunaServer pasaron con éxito.")
-    else:
-        print(f"  [{RED}FALLO{RESET}] Fallaron pruebas en backend:\n{out[-800:]}")
-        failures.append("Pruebas .NET backend")
 
-    # 4. Pruebas de Simuladores Python
-    print_step("4. Ejecutando pruebas de Simuladores TCP (Python 3)")
-    code, out = run_command(["python3", "-m", "unittest", "discover", "-s", "simulators", "-p", "test_*.py"])
+def _run_step_check(
+    step_title: str | None,
+    cmd: list[str],
+    ok_msg: str,
+    fail_msg: str,
+    fail_label: str,
+    failures: list[str],
+    cwd: Path | None = None,
+    tail_chars: int | None = None,
+) -> None:
+    """Ejecuta un comando de prueba/compilación e informa su estado en consola."""
+    if step_title:
+        print_step(step_title)
+    code, out = run_command(cmd, cwd=cwd)
     if code == 0:
-        print(f"  [{GREEN}OK{RESET}] Pruebas de protocolo y reglas de simuladores pasaron.")
-    else:
-        print(f"  [{RED}FALLO{RESET}] Fallaron pruebas de simuladores:\n{out}")
-        failures.append("Pruebas simuladores")
+        print(f"  [{GREEN}OK{RESET}] {ok_msg}")
+        return
+    detail = out[-tail_chars:] if tail_chars else out
+    print(f"  [{RED}FALLO{RESET}] {fail_msg}" + (f":\n{detail}" if detail else ""))
+    failures.append(fail_label)
 
-    # 5. Pruebas de Firmware MicroPython
-    print_step("5. Ejecutando pruebas de Firmware MicroPython RP2040")
-    code, out = run_command(["python3", "-m", "unittest", "discover", "-s", "firmware", "-p", "test_*.py"])
-    if code == 0:
-        print(f"  [{GREEN}OK{RESET}] Pruebas de HAL, pines y lógica de firmware pasaron.")
-    else:
-        print(f"  [{RED}FALLO{RESET}] Fallaron pruebas de firmware")
-        failures.append("Pruebas firmware")
 
-    # 6. Typecheck y Build de Frontend React
-    print_step("6. Verificando frontend React (TypeScript + Vite)")
-    code, out = run_command(["npm", "run", "lint"], cwd=repo_root / "frontend")
-    if code == 0:
-        print(f"  [{GREEN}OK{RESET}] Verificación estricta de tipos TypeScript completada.")
-    else:
-        print(f"  [{RED}FALLO{RESET}] Error en typecheck frontend:\n{out}")
-        failures.append("Lint frontend")
-
-    code, out = run_command(["npm", "run", "build"], cwd=repo_root / "frontend")
-    if code == 0:
-        print(f"  [{GREEN}OK{RESET}] Empaquetado de producción de Vite exitoso.")
-    else:
-        print(f"  [{RED}FALLO{RESET}] Error al construir paquete de frontend:\n{out}")
-        failures.append("Build frontend")
-
-    # Resumen final
+def _print_summary(failures: list[str]) -> int:
+    """Muestra el resumen final y devuelve 0 si todo pasó o 1 si hubo fallos."""
     print("\n" + "=" * 65)
     if not failures:
-        print(f"{BOLD}{GREEN}✓ TODOS LOS SISTEMAS LISTOS PARA DEMOSTRACIÓN (Hito M10){RESET}")
+        print(f"{BOLD}{GREEN}✓ TODOS LOS SISTEMAS LISTOS PARA DEMOSTRACIÓN (Hito M11){RESET}")
         print("Puedes arrancar la demostración siguiendo docs/DEMO_GUIDE.md")
         print("=" * 65)
         return 0
-    else:
-        print(f"{BOLD}{RED}✗ SE ENCONTRARON {len(failures)} PROBLEMA(S):{RESET}")
-        for f in failures:
-            print(f"  - {f}")
-        print("=" * 65)
-        return 1
+    print(f"{BOLD}{RED}✗ SE ENCONTRARON {len(failures)} PROBLEMA(S):{RESET}")
+    for failure in failures:
+        print(f"  - {failure}")
+    print("=" * 65)
+    return 1
+
+
+def main() -> int:
+    """Orquesta la verificación integral de herramientas, seguridad, backend, IoT y frontend."""
+    repo_root = Path(__file__).resolve().parent.parent
+    os.chdir(repo_root)
+
+    print(f"{BOLD}Verificador Integral de Entorno — Cuna Inteligente (M10){RESET}")
+    print(f"Directorio raíz: {repo_root}")
+
+    failures: list[str] = []
+    _check_system_tools(failures)
+    _check_security_rules(repo_root, failures)
+
+    _run_step_check(
+        "3. Ejecutando pruebas unitarias y de integración de Backend (.NET 8)",
+        ["dotnet", "test", "backend/CunaServer.sln", "--verbosity", "minimal"],
+        "Todas las pruebas de CunaServer pasaron con éxito.",
+        "Fallaron pruebas en backend",
+        "Pruebas .NET backend",
+        failures,
+        tail_chars=800,
+    )
+    _run_step_check(
+        "4. Ejecutando pruebas de Simuladores TCP (Python 3)",
+        ["python3", "-m", "unittest", "discover", "-s", "simulators", "-p", "test_*.py"],
+        "Pruebas de protocolo y reglas de simuladores pasaron.",
+        "Fallaron pruebas de simuladores",
+        "Pruebas simuladores",
+        failures,
+    )
+    _run_step_check(
+        "5. Ejecutando pruebas de Firmware MicroPython RP2040",
+        ["python3", "-m", "unittest", "discover", "-s", "firmware", "-p", "test_*.py"],
+        "Pruebas de HAL, pines y lógica de firmware pasaron.",
+        "Fallaron pruebas de firmware",
+        "Pruebas firmware",
+        failures,
+        tail_chars=800,
+    )
+
+    frontend_dir = repo_root / "frontend"
+    _run_step_check(
+        "6. Verificando frontend React (TypeScript + Tests + Vite)",
+        ["npm", "test"],
+        "Pruebas unitarias de helpers frontend pasaron.",
+        "Fallaron pruebas unitarias frontend",
+        "Tests frontend",
+        failures,
+        cwd=frontend_dir,
+    )
+    _run_step_check(
+        None,
+        ["npm", "run", "lint"],
+        "Verificación estricta de tipos TypeScript completada.",
+        "Error en typecheck frontend",
+        "Lint frontend",
+        failures,
+        cwd=frontend_dir,
+    )
+    _run_step_check(
+        None,
+        ["npm", "run", "build"],
+        "Empaquetado de producción de Vite exitoso.",
+        "Error al construir paquete de frontend",
+        "Build frontend",
+        failures,
+        cwd=frontend_dir,
+    )
+    _run_step_check(
+        "7. Verificando cliente Telegram Bot API (simulación HTTP)",
+        ["python3", "scripts/test_telegram.py", "--mock"],
+        "Prueba mock HTTP Bot API de Telegram completada.",
+        "Falló prueba mock de Telegram",
+        "Mock Telegram API",
+        failures,
+    )
+
+    return _print_summary(failures)
 
 
 if __name__ == "__main__":

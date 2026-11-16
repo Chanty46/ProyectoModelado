@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using CunaServer.Data;
 using CunaServer.Tcp;
@@ -8,6 +6,10 @@ using CunaServer.Telegram;
 
 namespace CunaServer.Services;
 
+/// <summary>
+/// Servicio de aplicación para alimentación del biberón inteligente (RF16, RF17, RF37),
+/// historial de sueño (RF30), exportación CSV/PDF (RF32) y juguetes/móvil colgante (RF12, RF13, RF33, RF36).
+/// </summary>
 public sealed class FeedingHistoryAndToysService
 {
     public const decimal MilkDensityGramsPerMl = 1.03m;
@@ -41,9 +43,15 @@ public sealed class FeedingHistoryAndToysService
         return Math.Round(diff / MilkDensityGramsPerMl, 1, MidpointRounding.AwayFromZero);
     }
 
+    /// <summary>
+    /// RF16: Indica si la temperatura del biberón está fuera de la ventana segura (35.0–38.5 °C).
+    /// </summary>
     public static bool IsFoodTemperatureOutOfRange(decimal? tempC)
         => tempC.HasValue && (tempC.Value < SafeFoodTempMinC || tempC.Value > SafeFoodTempMaxC);
 
+    /// <summary>
+    /// RF37: Inicia una sesión de alimentación validando masa inicial mínima (20 g) y alertando si la temperatura es insegura.
+    /// </summary>
     public async Task<ServiceResult<FeedingSessionRecord>> StartFeedingSessionAsync(
         AuthenticatedIdentity identity,
         StartFeedingSessionRequest request,
@@ -86,17 +94,7 @@ public sealed class FeedingHistoryAndToysService
 
         if (tempAlert && baby.CunaId.HasValue)
         {
-            var alertRecord = new EventAlertRecord(
-                Guid.NewGuid(),
-                baby.CunaId.Value,
-                Guid.Empty,
-                "food_temp_out_of_range",
-                "advertencia",
-                $"Alerta térmica de alimento (RF16): temperatura {request.TempC!.Value:F1} °C fuera del rango seguro (35.0–38.5 °C).",
-                JsonSerializer.Serialize(new { temp_c = request.TempC.Value, session_id = session.Id }),
-                now);
-            await _deviceRepo.SaveEventAlertAsync(alertRecord, ct);
-            await _telegramService.DispatchAlertForCribAsync(baby.CunaId.Value, alertRecord, ct);
+            await DispatchFoodTemperatureAlertAsync(baby.CunaId.Value, session.Id, request.TempC!.Value, now, ct);
         }
 
         await _deviceRepo.LogCaregiverActionAsync(new CaregiverAuditLogEntry(
@@ -117,6 +115,9 @@ public sealed class FeedingHistoryAndToysService
         return ServiceResult<FeedingSessionRecord>.Created(session);
     }
 
+    /// <summary>
+    /// RF17 + RF18: Cierra la toma, calcula mililitros consumidos y reinicia el temporizador del recordatorio dinámico.
+    /// </summary>
     public async Task<ServiceResult<FeedingSessionRecord>> FinishFeedingSessionAsync(
         AuthenticatedIdentity identity,
         Guid sessionId,
@@ -246,6 +247,25 @@ public sealed class FeedingHistoryAndToysService
             return ServiceResult<SleepSessionRecord>.BadRequest("El número de interrupciones no puede ser negativo.");
         }
 
+        if (request.CunaId == Guid.Empty)
+        {
+            return ServiceResult<SleepSessionRecord>.BadRequest("Se requiere el identificador válido de la cuna.");
+        }
+
+        var crib = await _deviceRepo.GetCribByIdAsync(request.CunaId, ct);
+        if (crib is null || crib.FamilyId != membership.FamilyId)
+        {
+            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
+                membership.FamilyId,
+                identity.UserId,
+                null,
+                "acceso_denegado_403",
+                clientIp,
+                $"cuna_ajena:registrar_sueno_rf30:{request.CunaId}",
+                DateTimeOffset.UtcNow), ct);
+            return ServiceResult<SleepSessionRecord>.Forbidden("Acceso denegado: la cuna no pertenece a tu familia.");
+        }
+
         var created = await _deviceRepo.CreateSleepSessionAsync(
             bebeId,
             request.CunaId,
@@ -326,30 +346,20 @@ public sealed class FeedingHistoryAndToysService
             return ServiceResult<ExportHistoryResponse>.BadRequest("El formato de exportación debe ser 'csv' o 'pdf' (RF32).");
         }
 
-        var sleepAll = await _deviceRepo.ListSleepSessionsByBabyAsync(bebeId, ct);
-        var feedingAll = await _deviceRepo.ListFeedingSessionsByBabyAsync(bebeId, ct);
+        var sleepTask = _deviceRepo.ListSleepSessionsByBabyAsync(bebeId, ct);
+        var feedingTask = _deviceRepo.ListFeedingSessionsByBabyAsync(bebeId, ct);
+        await Task.WhenAll(sleepTask, feedingTask);
 
-        var sleepFiltered = FilterByDateRange(sleepAll, s => s.Inicio, request.Desde, request.Hasta);
-        var feedingFiltered = FilterByDateRange(feedingAll, f => f.Inicio, request.Desde, request.Hasta);
-
-        byte[] fileBytes;
-        string contentType;
-        string extension;
-
-        if (formato == "csv")
-        {
-            fileBytes = BuildCsvBytes(baby, sleepFiltered, feedingFiltered);
-            contentType = "text/csv; charset=utf-8";
-            extension = "csv";
-        }
-        else
-        {
-            fileBytes = BuildPdfBytes(baby, sleepFiltered, feedingFiltered);
-            contentType = "application/pdf";
-            extension = "pdf";
-        }
+        var sleepFiltered = FilterByDateRange(await sleepTask, s => s.Inicio, request.Desde, request.Hasta);
+        var feedingFiltered = FilterByDateRange(await feedingTask, f => f.Inicio, request.Desde, request.Hasta);
 
         var now = DateTimeOffset.UtcNow;
+        var (fileBytes, contentType, fileName) = HistoryReportExporter.BuildReport(
+            formato,
+            baby,
+            sleepFiltered,
+            feedingFiltered,
+            now);
 
         await _deviceRepo.LogCaregiverActionAsync(new CaregiverAuditLogEntry(
             membership.FamilyId,
@@ -375,8 +385,6 @@ public sealed class FeedingHistoryAndToysService
             now), ct);
 
         sw.Stop();
-        var fileName = $"historial_{SanitizeFileName(baby.Nombre)}_{now:yyyyMMdd}.{extension}";
-
         return ServiceResult<ExportHistoryResponse>.Ok(new ExportHistoryResponse(
             fileName,
             contentType,
@@ -431,6 +439,7 @@ public sealed class FeedingHistoryAndToysService
         var central = await _deviceRepo.GetCentralDeviceForCribAsync(cunaId, ct);
         if (central is not null)
         {
+            using var notesDoc = song is not null ? JsonDocument.Parse(song.NotasJson) : null;
             await _tcpServer.SendCommandAsync(
                 central.DeviceId,
                 "song_play",
@@ -439,7 +448,7 @@ public sealed class FeedingHistoryAndToysService
                     action = accion,
                     song = song?.Codigo ?? request.Codigo,
                     duration_s = song?.DuracionSegundos ?? 0,
-                    notes = song is not null ? JsonDocument.Parse(song.NotasJson).RootElement : (object?)null
+                    notes = notesDoc?.RootElement
                 },
                 requireAck: false,
                 ct: ct);
@@ -542,9 +551,14 @@ public sealed class FeedingHistoryAndToysService
             return ServiceResult<ToysAndPeripheralsStatusResponse>.Forbidden(forbidden);
         }
 
-        var usage = await _deviceRepo.ListToyUsageForCribAsync(cunaId, ct);
-        var devices = await _deviceRepo.ListDevicesByCribAsync(cunaId, ct);
-        var telemetry = await _deviceRepo.ListTelemetryForCribAsync(cunaId, ct);
+        var usageTask = _deviceRepo.ListToyUsageForCribAsync(cunaId, ct);
+        var devicesTask = _deviceRepo.ListDevicesByCribAsync(cunaId, ct);
+        var telemetryTask = _deviceRepo.ListTelemetryForCribAsync(cunaId, ct);
+        await Task.WhenAll(usageTask, devicesTask, telemetryTask);
+
+        var usage = await usageTask;
+        var devices = await devicesTask;
+        var telemetry = await telemetryTask;
 
         var toyDev = devices.FirstOrDefault(d => d.Tipo == DeviceTypes.Juguete);
         var bottleDev = devices.FirstOrDefault(d => d.Tipo == DeviceTypes.Biberon);
@@ -560,6 +574,26 @@ public sealed class FeedingHistoryAndToysService
             bottleDev?.BateriaPct ?? latestBottleTelemetry?.BateriaPct,
             latestBottleTelemetry?.MasaBiberonG,
             latestBottleTelemetry?.TempBiberonC));
+    }
+
+    private async Task DispatchFoodTemperatureAlertAsync(
+        Guid cunaId,
+        Guid sessionId,
+        decimal tempC,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var alertRecord = new EventAlertRecord(
+            Guid.NewGuid(),
+            cunaId,
+            Guid.Empty,
+            "food_temp_out_of_range",
+            "advertencia",
+            $"Alerta térmica de alimento (RF16): temperatura {tempC:F1} °C fuera del rango seguro (35.0–38.5 °C).",
+            JsonSerializer.Serialize(new { temp_c = tempC, session_id = sessionId }),
+            now);
+        await _deviceRepo.SaveEventAlertAsync(alertRecord, ct);
+        await _telegramService.DispatchAlertForCribAsync(cunaId, alertRecord, ct);
     }
 
     private static IReadOnlyList<T> FilterByDateRange<T>(
@@ -585,188 +619,34 @@ public sealed class FeedingHistoryAndToysService
             .ToList();
     }
 
-    private static byte[] BuildCsvBytes(
-        BabyRecord baby,
-        IReadOnlyList<SleepSessionRecord> sleepSessions,
-        IReadOnlyList<FeedingSessionRecord> feedingSessions)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("Categoria,FechaInicio,FechaFin,Detalle1,Detalle2,Detalle3,Alerta");
-
-        foreach (var s in sleepSessions)
-        {
-            sb.AppendLine(string.Create(
-                CultureInfo.InvariantCulture,
-                $"Sueno ({s.Tipo}),{s.Inicio:O},{s.Fin?.ToString("O") ?? ""},mov_prom={s.MovimientoPromedio ?? 0:F3},interrupciones={s.Interrupciones},bebe={EscapeCsv(baby.Nombre)},NO"));
-        }
-
-        foreach (var f in feedingSessions)
-        {
-            sb.AppendLine(string.Create(
-                CultureInfo.InvariantCulture,
-                $"Alimentacion,{f.Inicio:O},{f.Fin?.ToString("O") ?? ""},m_inicial_g={f.MasaInicialG:F1},m_final_g={f.MasaFinalG ?? 0:F1},ml={f.MlConsumidos ?? 0:F1},{(f.AlertaTemperatura ? "SI_TEMP" : "NO")}"));
-        }
-
-        return Encoding.UTF8.GetBytes(sb.ToString());
-    }
-
-    private static byte[] BuildPdfBytes(
-        BabyRecord baby,
-        IReadOnlyList<SleepSessionRecord> sleepSessions,
-        IReadOnlyList<FeedingSessionRecord> feedingSessions)
-    {
-        var lines = new List<string>
-        {
-            $"Reporte Historico Cuna Inteligente (RF32) - Bebe: {EscapePdfText(baby.Nombre)}",
-            $"Fecha de nacimiento: {baby.FechaNacimiento:yyyy-MM-dd} | Generado: {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm} UTC",
-            $"Sesiones de sueno: {sleepSessions.Count} | Sesiones de alimentacion: {feedingSessions.Count}",
-            "------------------------------------------------------------------------"
-        };
-
-        foreach (var f in feedingSessions.Take(15))
-        {
-            lines.Add(string.Create(
-                CultureInfo.InvariantCulture,
-                $"[Toma] {f.Inicio:yyyy-MM-dd HH:mm} | Inicial: {f.MasaInicialG:F1}g | Final: {f.MasaFinalG ?? 0:F1}g | Vol: {f.MlConsumidos ?? 0:F1} ml | T: {f.TempC ?? 0:F1} C"));
-        }
-
-        foreach (var s in sleepSessions.Take(15))
-        {
-            lines.Add(string.Create(
-                CultureInfo.InvariantCulture,
-                $"[Sueno {s.Tipo}] {s.Inicio:yyyy-MM-dd HH:mm} | Mov prom: {s.MovimientoPromedio ?? 0:F3} kg/m | Interrupciones: {s.Interrupciones}"));
-        }
-
-        var contentBuilder = new StringBuilder();
-        contentBuilder.AppendLine("BT");
-        contentBuilder.AppendLine("/F1 10 Tf");
-        var y = 760;
-        foreach (var line in lines)
-        {
-            contentBuilder.AppendLine($"50 {y} Td ({line}) Tj");
-            contentBuilder.AppendLine($"-50 -{y} Td");
-            y -= 16;
-            if (y < 60)
-            {
-                break;
-            }
-        }
-        contentBuilder.AppendLine("ET");
-        var streamContent = contentBuilder.ToString();
-
-        var pdf = new StringBuilder();
-        pdf.AppendLine("%PDF-1.4");
-        pdf.AppendLine("1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj");
-        pdf.AppendLine("2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj");
-        pdf.AppendLine("3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj");
-        pdf.AppendLine($"4 0 obj << /Length {Encoding.ASCII.GetByteCount(streamContent)} >> stream");
-        pdf.Append(streamContent);
-        pdf.AppendLine("endstream endobj");
-        pdf.AppendLine("5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj");
-        pdf.AppendLine("trailer << /Root 1 0 R >>");
-        pdf.AppendLine("%%EOF");
-
-        return Encoding.ASCII.GetBytes(pdf.ToString());
-    }
-
-    private static string EscapeCsv(string input)
-    {
-        if (string.IsNullOrEmpty(input))
-        {
-            return "\"\"";
-        }
-
-        var sanitized = input.Replace("\"", "\"\"").Replace("\r", " ").Replace("\n", " ");
-        if (sanitized.Length > 0 && (sanitized[0] is '=' or '+' or '-' or '@' or '\t'))
-        {
-            sanitized = "'" + sanitized;
-        }
-
-        return $"\"{sanitized}\"";
-    }
-
-    private static string EscapePdfText(string input)
-        => input.Replace("(", "[").Replace(")", "]").Replace("\\", "/");
-
-    private static string SanitizeFileName(string input)
-    {
-        var chars = input.Where(char.IsLetterOrDigit).ToArray();
-        return chars.Length == 0 ? "bebe" : new string(chars).ToLowerInvariant();
-    }
-
-    private async Task<(UserMembership? Membership, BabyRecord? Baby, string? ForbiddenMessage)> VerifyBabyAccessAsync(
+    private Task<(UserMembership? Membership, BabyRecord? Baby, string? ForbiddenMessage)> VerifyBabyAccessAsync(
         AuthenticatedIdentity identity,
         Guid bebeId,
         string action,
         string? clientIp,
         CancellationToken ct)
-    {
-        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
-        if (membership is null)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                null,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"sin_familia:{action}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: el usuario no pertenece a una familia activa.");
-        }
+        => FamilyAuthorizationHelper.RequireFamilyBabyAccessAsync(
+            _accountRepo,
+            _deviceRepo,
+            identity,
+            bebeId,
+            action,
+            clientIp,
+            ct);
 
-        var baby = await _deviceRepo.GetBabyByIdAsync(bebeId, ct);
-        if (baby is null || baby.FamilyId != membership.FamilyId)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"bebe_ajeno:{action}:{bebeId}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: el perfil de bebé no pertenece a tu familia.");
-        }
-
-        return (membership, baby, null);
-    }
-
-    private async Task<(UserMembership? Membership, CribRecord? Crib, string? ForbiddenMessage)> VerifyCribAccessAsync(
+    private Task<(UserMembership? Membership, CribRecord? Crib, string? ForbiddenMessage)> VerifyCribAccessAsync(
         AuthenticatedIdentity identity,
         Guid cunaId,
         string action,
         string? clientIp,
         CancellationToken ct)
-    {
-        var membership = await _accountRepo.GetUserMembershipAsync(identity.UserId, ct);
-        if (membership is null)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                null,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"sin_familia:{action}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: el usuario no pertenece a una familia activa.");
-        }
-
-        var crib = await _deviceRepo.GetCribByIdAsync(cunaId, ct);
-        if (crib is null || crib.FamilyId != membership.FamilyId)
-        {
-            await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(
-                membership.FamilyId,
-                identity.UserId,
-                null,
-                "acceso_denegado_403",
-                clientIp,
-                $"cuna_ajena:{action}:{cunaId}",
-                DateTimeOffset.UtcNow), ct);
-            return (null, null, "Acceso denegado: la cuna no pertenece a tu familia.");
-        }
-
-        return (membership, crib, null);
-    }
+        => FamilyAuthorizationHelper.RequireFamilyCribAccessAsync(
+            _accountRepo,
+            _deviceRepo,
+            identity,
+            cunaId,
+            action,
+            requirePrincipal: false,
+            clientIp,
+            ct);
 }
