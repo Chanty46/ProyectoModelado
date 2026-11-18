@@ -63,16 +63,16 @@ public sealed class CribLiveControlService
         string? clientIp,
         CancellationToken ct)
     {
-        var (membership, crib, forbidden) = await VerifyFamilyCribMembershipAsync(
+        var (membership, crib, authError) = await AuthorizeCribAccessAsync<LiveCribStatusResponse>(
             identity,
             cunaId,
             "consultar_cuna_en_vivo",
             requirePrincipal: false,
             clientIp,
             ct);
-        if (forbidden is not null || membership is null || crib is null)
+        if (authError is not null || membership is null || crib is null)
         {
-            return ServiceResult<LiveCribStatusResponse>.Forbidden(forbidden ?? "Acceso denegado.");
+            return authError!;
         }
 
         // Si el Modo Atención ya expiró, regresarlo automáticamente a Monitoreo (RF05)
@@ -107,16 +107,16 @@ public sealed class CribLiveControlService
         string? clientIp,
         CancellationToken ct)
     {
-        var (membership, crib, forbidden) = await VerifyFamilyCribMembershipAsync(
+        var (membership, _, authError) = await AuthorizeCribAccessAsync<CribConfig>(
             identity,
             cunaId,
             "consultar_umbrales_cuna",
             requirePrincipal: false,
             clientIp,
             ct);
-        if (forbidden is not null || membership is null || crib is null)
+        if (authError is not null || membership is null)
         {
-            return ServiceResult<CribConfig>.Forbidden(forbidden ?? "Acceso denegado.");
+            return authError!;
         }
 
         var cfg = await _deviceRepo.GetCribConfigAsync(cunaId, membership.FamilyId, ct);
@@ -135,16 +135,16 @@ public sealed class CribLiveControlService
             return ServiceResult<CribRecord>.BadRequest("Se requiere el cuerpo de la petición.");
         }
 
-        var (membership, crib, forbidden) = await VerifyFamilyCribMembershipAsync(
+        var (_, crib, authError) = await AuthorizeCribAccessAsync<CribRecord>(
             identity,
             cunaId,
             "cambiar_modo_operacion_rf05",
             requirePrincipal: false,
             clientIp,
             ct);
-        if (forbidden is not null || membership is null || crib is null)
+        if (authError is not null || crib is null)
         {
-            return ServiceResult<CribRecord>.Forbidden(forbidden ?? "Acceso denegado.");
+            return authError!;
         }
 
         var targetMode = (request.Modo ?? "").Trim().ToLowerInvariant();
@@ -178,16 +178,16 @@ public sealed class CribLiveControlService
             return ServiceResult<CribRecord>.BadRequest("Se requiere el cuerpo de la petición.");
         }
 
-        var (membership, crib, forbidden) = await VerifyFamilyCribMembershipAsync(
+        var (membership, _, authError) = await AuthorizeCribAccessAsync<CribRecord>(
             identity,
             cunaId,
             "regular_luz_nocturna_rf09",
             requirePrincipal: false,
             clientIp,
             ct);
-        if (forbidden is not null || membership is null || crib is null)
+        if (authError is not null || membership is null)
         {
-            return ServiceResult<CribRecord>.Forbidden(forbidden ?? "Acceso denegado.");
+            return authError!;
         }
 
         if (request.Nivel is < 0 or > 100)
@@ -247,16 +247,16 @@ public sealed class CribLiveControlService
         }
 
         // RF08 + RF03: Exclusivo del Usuario Principal
-        var (membership, crib, forbidden) = await VerifyFamilyCribMembershipAsync(
+        var (membership, _, authError) = await AuthorizeCribAccessAsync<CribConfig>(
             identity,
             cunaId,
             "ajustar_umbrales_rf08",
             requirePrincipal: true,
             clientIp,
             ct);
-        if (forbidden is not null || membership is null || crib is null)
+        if (authError is not null || membership is null)
         {
-            return ServiceResult<CribConfig>.Forbidden(forbidden ?? "Acceso denegado.");
+            return authError!;
         }
 
         if (ValidateThresholdsRequest(request) is { } validationError)
@@ -846,14 +846,15 @@ public sealed class CribLiveControlService
         }
     }
 
-    private Task<(UserMembership? Membership, CribRecord? Crib, string? ForbiddenMessage)> VerifyFamilyCribMembershipAsync(
+    private async Task<(UserMembership? Membership, CribRecord? Crib, ServiceResult<T>? Error)> AuthorizeCribAccessAsync<T>(
         AuthenticatedIdentity identity,
         Guid cunaId,
         string attemptedAction,
         bool requirePrincipal,
         string? clientIp,
         CancellationToken ct)
-        => FamilyAuthorizationHelper.RequireFamilyCribAccessAsync(
+    {
+        var (membership, crib, forbidden) = await FamilyAuthorizationHelper.RequireFamilyCribAccessAsync(
             _accountRepo,
             _deviceRepo,
             identity,
@@ -862,6 +863,13 @@ public sealed class CribLiveControlService
             requirePrincipal,
             clientIp,
             ct);
+        if (forbidden is not null || membership is null || crib is null)
+        {
+            return (null, null, ServiceResult<T>.Forbidden(forbidden ?? "Acceso denegado."));
+        }
+
+        return (membership, crib, null);
+    }
 }
 
 /// <summary>
