@@ -785,7 +785,7 @@ public sealed class DeviceTcpServer : BackgroundService
             return opts;
         }
 
-        if (int.TryParse(config["TCP_PORT"], out var port) && port is >= 0 and <= 65535)
+        if (!isTestHost && int.TryParse(config["TCP_PORT"], out var port) && port is >= 0 and <= 65535)
         {
             opts.Port = port;
         }

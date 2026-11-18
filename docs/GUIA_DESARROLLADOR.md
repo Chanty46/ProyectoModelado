@@ -39,7 +39,7 @@ Notas rápidas para ubicarse en el código de **Cuna Inteligente** sin perder ti
 ### Scripts (`scripts/`)
 - `verify_environment.py`: corre chequeos de herramientas, escaneo de secretos y todas las suites de prueba.
 - `test_telegram.py`: prueba mock HTTP (`--mock`), conectividad HTTPS (`--probe-network`), `--delete-webhook` y envío manual con `--chat-id`.
-- `provision_demo_devices.py`, `set_env_keys.ps1`, `set_sim_tokens.ps1`: utilidades de demo con Supabase real.
+- `provision_demo_devices.py`, `setup_local.py`: utilidades multiplataforma (Windows/Linux) para configurar `.env` y tokens de demo con Supabase real.
 
 ## Ejemplo rápido: flujo de una alerta de retiro
 

@@ -13,6 +13,7 @@ interface LiveCribPanelProps {
   cunaId: string;
   activeProfileId: string | null;
   userRole: "principal" | "secundario" | null;
+  refreshSignal?: number;
   onError: (msg: string | null) => void;
   onCribUpdated: () => void;
 }
@@ -26,6 +27,7 @@ export function LiveCribPanel({
   cunaId,
   activeProfileId,
   userRole,
+  refreshSignal = 0,
   onError,
   onCribUpdated,
 }: LiveCribPanelProps) {
@@ -45,6 +47,7 @@ export function LiveCribPanel({
     accessToken,
     cunaId,
     activeProfileId,
+    refreshSignal,
     onError,
     onCribUpdated,
   });

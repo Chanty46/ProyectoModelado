@@ -18,11 +18,11 @@ Este documento describe el paso a paso reproducible para presentar la demostraci
 
 ### 1.1 Primera vez con una cuenta real (simulacro sin maqueta)
 
-1. **Claves locales**: `powershell -ExecutionPolicy Bypass -File scripts/set_env_keys.ps1` pide las claves ocultas y las escribe en `backend/.env` y `frontend/.env` (Enter = conservar el valor actual).
+1. **Claves locales**: `python3 scripts/setup_local.py --env` (`python scripts/setup_local.py --env` en Windows) pide las claves ocultas y las escribe en `backend/.env` y `frontend/.env` (Enter = conservar el valor actual).
 2. **Esquema en Supabase**: si la API responde `PGRST205` (tabla no encontrada), pegar `supabase/migrations/20261107200000_m1_esquema_inicial_rls.sql` en el SQL Editor del proyecto y ejecutarlo.
 3. **Dispositivos "de fábrica"**: `python -I scripts/provision_demo_devices.py` registra `demo-central-01`, `demo-colchon-01`, `demo-movil-01`, `demo-biberon-01` y `demo-juguete-01` sin dueño e imprime un código de reclamo para cada uno (`--status` solo muestra el estado).
 4. **Emparejar en la web** (Gestión de Cunas → Agregar dispositivo): primero la central (crea la cuna) y luego los periféricos en esa cuna. Copiar el token que se muestra una sola vez.
-5. **Tokens para los simuladores**: `powershell -ExecutionPolicy Bypass -File scripts/set_sim_tokens.ps1` los guarda en `simulators/devices.local.json` (ignorado por Git). `python -m simulators.run_all` usa ese archivo automáticamente si existe.
+5. **Tokens para los simuladores**: `python3 scripts/setup_local.py --sim-tokens` los guarda en `simulators/devices.local.json` (ignorado por Git). `python -m simulators.run_all` usa ese archivo automáticamente si existe.
 6. **Windows**: si "Acceso controlado a carpetas" de Defender está activo, trabajar el repositorio fuera de `Documentos` (por ejemplo `C:\dev`), o npm/dotnet no podrán escribir.
 
 ---

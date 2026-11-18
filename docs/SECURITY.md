@@ -7,12 +7,10 @@ Proyecto de curso, red local, no público. Aun así se aplican las medidas barat
 |---|---|---|
 | Project URL, project ref, `sb_publishable_` | Sí (seguro con RLS) | `frontend/.env`, `.env.example` |
 | `sb_secret_` (salta RLS) | **No** | Solo `backend/.env` |
-| Google Client ID | Sí | Panel de Supabase |
-| Google Client Secret | **No** | Panel de Supabase + gestor de contraseñas |
 | Token del bot de Telegram | **No** | `backend/.env` |
 | Wi-Fi, `DEVICE_TOKEN` | **No** | `secrets.py` de cada Pico |
 | Contraseña de la BD | **No** | Gestor de contraseñas |
-Si algo privado se filtra: rotarlo de inmediato (Supabase → nueva secret key; BotFather `/revoke`; Google → nuevo secreto).
+Si algo privado se filtra: rotarlo de inmediato (Supabase → nueva secret key; BotFather `/revoke`).
 
 ## Checklist por hito (Verificado en M10)
 - [x] No hay secretos en el código ni en el historial (`git diff`, buscar `sb_secret`, `AAH`, contraseñas; verificado en `EndToEndAndSecurityChecklistTests`).

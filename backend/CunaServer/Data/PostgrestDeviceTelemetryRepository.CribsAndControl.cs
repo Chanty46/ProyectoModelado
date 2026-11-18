@@ -158,13 +158,15 @@ public sealed partial class PostgrestDeviceTelemetryRepository
                 hash_token = (string?)null,
                 estado = "revocado"
             },
-            ct);
+            ct,
+            includeNulls: true);
 
         // Conservar el perfil e historial del bebé desasociando cuna_id (RF27)
         await _client.PatchAsync(
             $"bebes?cuna_id=eq.{cunaId}&family_id=eq.{familyId}",
             new { cuna_id = (Guid?)null },
-            ct);
+            ct,
+            includeNulls: true);
 
         await _client.DeleteAsync($"cunas?id=eq.{cunaId}&family_id=eq.{familyId}", ct, ensureSuccess: true);
 
@@ -222,7 +224,8 @@ public sealed partial class PostgrestDeviceTelemetryRepository
                 fecha_nacimiento = fechaNacimiento,
                 notas
             },
-            ct);
+            ct,
+            includeNulls: true);
         return dto?.ToModel();
     }
 
@@ -278,7 +281,8 @@ public sealed partial class PostgrestDeviceTelemetryRepository
                 modo_operacion = modoOperacion,
                 modo_atencion_expira_en = modoAtencionExpiraEn
             },
-            ct);
+            ct,
+            includeNulls: true);
         return dto?.ToModel();
     }
 

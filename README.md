@@ -27,11 +27,11 @@ Las reglas del equipo y decisiones técnicas están en [AGENTS.md](AGENTS.md) y 
 ## Estructura del proyecto
 
 - `backend/CunaServer/`: API REST (`Api/`), lógica de cuna, alimentación y exportación CSV/PDF (`Services/`), servidor TCP (`Tcp/`), bot de Telegram (`Telegram/`) y repositorios InMemory/PostgREST (`Data/`).
-- `backend/CunaServer.Tests/`: 54 pruebas unitarias y de integración en xUnit.
+- `backend/CunaServer.Tests/`: 59 pruebas unitarias y de integración en xUnit.
 - `frontend/`: aplicación web en React, TypeScript, Vite y Tailwind CSS (`src/components/`, `src/hooks/`, `src/lib/api/`).
 - `firmware/`: código MicroPython para las 5 Pico W (`central`, `colchon`, `movil`, `biberon`, `juguete`), abstracción de pines/HAL en `common/` y pruebas en PC (`test_firmware.py`).
 - `simulators/`: simuladores en Python 3 para probar todo sin placas físicas (`run_simulators.py`, `protocol_client.py`, `test_simulators.py`).
-- `scripts/`: scripts de ayuda (`verify_environment.py`, `test_telegram.py`, `provision_demo_devices.py` y utilidades PowerShell).
+- `scripts/`: scripts de ayuda en Python (`verify_environment.py`, `test_telegram.py`, `provision_demo_devices.py` y `setup_local.py`).
 - `supabase/`: migración inicial con 18 tablas y políticas RLS (`migrations/`), datos de prueba (`seed.sql`) y pruebas de aislamiento (`tests/isolation_test.sql`).
 - `docs/`: documentación de arquitectura, protocolo, seguridad, pruebas físicas pendientes y presentaciones en HTML.
 
@@ -50,7 +50,20 @@ Antes de correr el proyecto con credenciales reales, copia las plantillas de con
 - `frontend/.env.example` -> `frontend/.env`
 - `firmware/secrets.example.py` -> `firmware/secrets.py` (para Pico W física: usa Wi-Fi de 2.4 GHz, la IP privada de la laptop y abre el puerto TCP `9000` en red privada)
 
-## Correr en local
+## Correr en local (1 solo comando en Windows y Linux)
+
+Para pruebas rápidas y presentación preliminar sin hardware físico:
+
+- **Windows:** `python run.py`
+- **Linux:** `python3 run.py`
+
+Esto instala dependencias si faltan, levanta el backend (`.NET 8`), los 5 simuladores IoT y la web (`http://localhost:5173`), y abre el navegador automáticamente.
+- **Acceso temporal de pruebas:** usuario `Padre` · contraseña `123` (habilitado automáticamente cuando `SUPABASE_SECRET_KEY` no está configurado o `LOCAL_DEMO_AUTH_ENABLED=true`).
+- **Ejecutar todas las pruebas:** `python3 run.py --test` (`python run.py --test` en Windows).
+- **Hardware Pico W real (sin simuladores):** `python3 run.py --no-simulators`.
+
+<details>
+<summary>Arranque manual en 3 terminales (alternativa)</summary>
 
 **Terminal 1 — Backend (.NET 8):**
 ```bash
@@ -68,9 +81,11 @@ La interfaz abre en `http://localhost:5173`.
 
 **Terminal 3 — Simuladores (sin hardware físico):**
 ```bash
-python3 -m simulators.run_all --host 127.0.0.1 --port 9000
+python3 -m simulators.run_all --host 127.0.0.1 --port 9000 --telemetry-interval 4
 ```
 También puedes pasar `--device colchon` para correr un solo nodo, `--once` para un único ciclo, o usar `simulators/devices.local.json` si emparejaste dispositivos en la web.
+
+</details>
 
 ## Pruebas
 
@@ -99,6 +114,8 @@ cd frontend && npm test && npm run lint && npm run build
 ## Enlaces útiles
 
 - Guion de demo: [docs/DEMO_GUIDE.md](docs/DEMO_GUIDE.md)
+- Manual visual de usuario y ejecución (PDF): [docs/Manual_Usuario_Cuna_Inteligente.pdf](docs/Manual_Usuario_Cuna_Inteligente.pdf)
+- Manual de usuario del bot de Telegram (PDF): [docs/Manual_Usuario_Bot_Telegram.pdf](docs/Manual_Usuario_Bot_Telegram.pdf)
 - Guía interna del código: [docs/GUIA_DESARROLLADOR.md](docs/GUIA_DESARROLLADOR.md)
 - Reporte técnico: [docs/REPORTE_TECNICO.md](docs/REPORTE_TECNICO.md)
 - Pruebas físicas pendientes: [docs/HARDWARE_PENDING_TESTS.md](docs/HARDWARE_PENDING_TESTS.md)

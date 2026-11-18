@@ -25,12 +25,16 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddHttpClient();
-builder.Services.AddSingleton<IJwtTokenValidator>(sp =>
+builder.Services.AddSingleton<SupabaseJwksTokenValidator>(sp =>
 {
     var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
     var config = sp.GetRequiredService<IConfiguration>();
     return new SupabaseJwksTokenValidator(httpFactory.CreateClient("JwksClient"), config);
 });
+builder.Services.AddSingleton<IJwtTokenValidator>(sp =>
+    new CompositeJwtTokenValidator(
+        sp.GetRequiredService<SupabaseJwksTokenValidator>(),
+        sp.GetRequiredService<LocalDemoAuthService>()));
 
 var supabaseSecretKey = builder.Configuration["SUPABASE_SECRET_KEY"];
 if (!string.IsNullOrWhiteSpace(supabaseSecretKey))
@@ -75,6 +79,7 @@ builder.Services.AddSingleton<IntercomAudioService>();
 builder.Services.AddSingleton<PairingAndCribService>();
 builder.Services.AddSingleton<TelegramBotService>();
 builder.Services.AddSingleton<CribLiveControlService>();
+builder.Services.AddSingleton<LocalDemoAuthService>();
 builder.Services.AddSingleton<FeedingHistoryAndToysService>();
 builder.Services.AddHostedService<CribWatchdogBackgroundService>();
 builder.Services.AddHostedService<TelegramPollingAndRemindersBackgroundService>();
@@ -123,6 +128,7 @@ _ = app.Services.GetRequiredService<CribLiveControlService>();
 app.UseCors("WebFrontend");
 
 app.MapHealthEndpoints();
+app.MapLocalDemoEndpoints();
 app.MapAccountAndFamilyEndpoints();
 app.MapIntercomEndpoints();
 app.MapPairingAndCribEndpoints();
@@ -134,6 +140,13 @@ await app.RunAsync();
 
 static void LoadDotEnvIfExists()
 {
+    var isTestHost = AppDomain.CurrentDomain.GetAssemblies()
+        .Any(a => a.GetName().Name?.StartsWith("xunit", StringComparison.OrdinalIgnoreCase) == true);
+    if (isTestHost)
+    {
+        return;
+    }
+
     var rawCandidates = new List<string>
     {
         Path.Combine(Directory.GetCurrentDirectory(), "backend", ".env"),

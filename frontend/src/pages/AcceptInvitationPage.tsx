@@ -2,17 +2,27 @@ import { useState, type FormEvent } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { UserPlus, AlertCircle, CheckCircle2 } from "lucide-react";
 import { accountApi, ApiError, type AccountContextResponse } from "../lib/api";
+import { EmailPasswordAuthForm } from "../components/auth/EmailPasswordAuthForm";
 
 interface AcceptInvitationPageProps {
   accessToken: string | null;
+  supabaseConfigured?: boolean;
+  isAuthenticatingEmail?: boolean;
   onAccepted: (context: AccountContextResponse) => void;
-  onRequestGoogleLogin: () => void;
+  onEmailLogin: (email: string, password: string) => Promise<void>;
+  onEmailSignUp: (
+    email: string,
+    password: string
+  ) => Promise<{ needsEmailConfirmation: boolean; message: string }>;
 }
 
 export function AcceptInvitationPage({
   accessToken,
+  supabaseConfigured = false,
+  isAuthenticatingEmail = false,
   onAccepted,
-  onRequestGoogleLogin,
+  onEmailLogin,
+  onEmailSignUp,
 }: AcceptInvitationPageProps) {
   const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
@@ -83,17 +93,16 @@ export function AcceptInvitationPage({
             <span>Cuenta vinculada correctamente. Redirigiendo al panel...</span>
           </div>
         ) : !accessToken ? (
-          <div className="space-y-4">
+          <div className="space-y-3">
             <p className="text-sm text-slate-600">
-              Inicia sesión con tu cuenta de Google para aceptar la invitación familiar.
+              Inicia sesión o crea tu cuenta con correo en Supabase para aceptar la invitación familiar.
             </p>
-            <button
-              type="button"
-              onClick={onRequestGoogleLogin}
-              className="w-full rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500"
-            >
-              Continuar con Google (RF01)
-            </button>
+            <EmailPasswordAuthForm
+              supabaseConfigured={supabaseConfigured}
+              isSubmitting={isAuthenticatingEmail}
+              onEmailLogin={onEmailLogin}
+              onEmailSignUp={onEmailSignUp}
+            />
           </div>
         ) : (
           <form onSubmit={handleAccept} className="space-y-4">

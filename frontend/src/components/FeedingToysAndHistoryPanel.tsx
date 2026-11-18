@@ -16,6 +16,7 @@ interface FeedingToysAndHistoryPanelProps {
   cunaId: string;
   bebeId: string | null;
   activeProfileId: string | null;
+  refreshSignal?: number;
   onError: (msg: string | null) => void;
 }
 
@@ -28,6 +29,7 @@ export function FeedingToysAndHistoryPanel({
   cunaId,
   bebeId,
   activeProfileId,
+  refreshSignal = 0,
   onError,
 }: FeedingToysAndHistoryPanelProps) {
   const [songs, setSongs] = useState<SongCatalogItem[]>([]);
@@ -116,8 +118,9 @@ export function FeedingToysAndHistoryPanel({
   }, [loadCribPeripherals]);
 
   useEffect(() => {
+    void loadCribPeripherals(false);
     void loadBabyHistories();
-  }, [loadBabyHistories]);
+  }, [refreshSignal, loadCribPeripherals, loadBabyHistories]);
 
   return (
     <div className="space-y-4">

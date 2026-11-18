@@ -3,6 +3,8 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { FamilyAdminPanel } from "./family/FamilyAdminPanel";
 import { NightLightControlCard } from "./live/NightLightControlCard";
+import { LoginLandingView } from "./auth/LoginLandingView";
+import { DemoSimulatorCard } from "./live/DemoSimulatorCard";
 import { AcceptInvitationPage } from "../pages/AcceptInvitationPage";
 import { accountApi, type AccountContextResponse } from "../lib/api";
 
@@ -161,8 +163,8 @@ describe("AcceptInvitationPage Component", () => {
     vi.clearAllMocks();
   });
 
-  it("prompts Google login when user arrives without active session", () => {
-    const loginSpy = vi.fn();
+  it("prompts email/password login without Google option when user arrives without active session", async () => {
+    const emailLoginSpy = vi.fn().mockResolvedValue(undefined);
     render(
       <MemoryRouter initialEntries={["/invitacion/tok-123"]}>
         <Routes>
@@ -171,8 +173,10 @@ describe("AcceptInvitationPage Component", () => {
             element={
               <AcceptInvitationPage
                 accessToken={null}
+                supabaseConfigured={true}
                 onAccepted={vi.fn()}
-                onRequestGoogleLogin={loginSpy}
+                onEmailLogin={emailLoginSpy}
+                onEmailSignUp={vi.fn().mockResolvedValue({ needsEmailConfirmation: false, message: "" })}
               />
             }
           />
@@ -180,8 +184,14 @@ describe("AcceptInvitationPage Component", () => {
       </MemoryRouter>
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Continuar con Google/i }));
-    expect(loginSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Google/i)).toBeNull();
+    fireEvent.change(screen.getByLabelText(/Correo electrónico/i), { target: { value: "rosa@cuna.local" } });
+    fireEvent.change(screen.getByLabelText(/Clave de cuenta/i), { target: { value: "clave123" } });
+    fireEvent.click(screen.getByRole("button", { name: /Iniciar sesión con correo/i }));
+
+    await waitFor(() => {
+      expect(emailLoginSpy).toHaveBeenCalledWith("rosa@cuna.local", "clave123");
+    });
   });
 
   it("submits profile name and accepts family invitation when authenticated", async () => {
@@ -199,7 +209,8 @@ describe("AcceptInvitationPage Component", () => {
               <AcceptInvitationPage
                 accessToken="jwt-invited"
                 onAccepted={acceptedSpy}
-                onRequestGoogleLogin={vi.fn()}
+                onEmailLogin={vi.fn()}
+                onEmailSignUp={vi.fn().mockResolvedValue({ needsEmailConfirmation: false, message: "" })}
               />
             }
           />
@@ -220,6 +231,97 @@ describe("AcceptInvitationPage Component", () => {
       });
       expect(acceptedSpy).toHaveBeenCalledTimes(1);
       expect(screen.getByText(/Cuenta vinculada correctamente/i)).toBeInTheDocument();
+    });
+  });
+});
+
+describe("LoginLandingView & DemoSimulatorCard Components", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("submits local presentation login credentials (Padre / 123) and hides Google button", async () => {
+    const localLoginSpy = vi.fn().mockResolvedValue(undefined);
+    render(
+      <LoginLandingView
+        supabaseConfigured={false}
+        localLoginEnabled={true}
+        onLocalLogin={localLoginSpy}
+        onEmailLogin={vi.fn()}
+        onEmailSignUp={vi.fn().mockResolvedValue({ needsEmailConfirmation: false, message: "" })}
+      />
+    );
+
+    expect(screen.queryByText(/Google/i)).toBeNull();
+    const userInput = screen.getByLabelText(/Usuario/i);
+    const passInput = screen.getByLabelText("Contraseña");
+    expect(userInput).toHaveValue("Padre");
+
+    fireEvent.change(passInput, { target: { value: "123" } });
+    fireEvent.click(screen.getByRole("button", { name: /Entrar como Padre/i }));
+
+    await waitFor(() => {
+      expect(localLoginSpy).toHaveBeenCalledWith("Padre", "123");
+    });
+  });
+
+  it("submits Supabase email sign-in and account registration when configured", async () => {
+    const emailLoginSpy = vi.fn().mockResolvedValue(undefined);
+    const emailSignUpSpy = vi.fn().mockResolvedValue({
+      needsEmailConfirmation: true,
+      message: "Cuenta registrada. Revisa tu correo para confirmar.",
+    });
+
+    render(
+      <LoginLandingView
+        supabaseConfigured={true}
+        localLoginEnabled={true}
+        onLocalLogin={vi.fn()}
+        onEmailLogin={emailLoginSpy}
+        onEmailSignUp={emailSignUpSpy}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText(/Correo electrónico/i), { target: { value: "mama@cuna.local" } });
+    fireEvent.change(screen.getByLabelText(/Clave de cuenta/i), { target: { value: "secreto123" } });
+    fireEvent.click(screen.getByRole("button", { name: /Iniciar sesión con correo/i }));
+
+    await waitFor(() => {
+      expect(emailLoginSpy).toHaveBeenCalledWith("mama@cuna.local", "secreto123");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Crear cuenta$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Crear cuenta en Supabase/i }));
+
+    await waitFor(() => {
+      expect(emailSignUpSpy).toHaveBeenCalledWith("mama@cuna.local", "secreto123");
+      expect(screen.getByRole("status")).toHaveTextContent(/Cuenta registrada/i);
+    });
+  });
+
+  it("triggers simulated hardware event and displays confirmation message", async () => {
+    const onSimulatedSpy = vi.fn();
+    const simSpy = vi.spyOn(accountApi, "simulateDemoEvent").mockResolvedValue({
+      action: "env_alert",
+      message: "Alerta ambiental enviada (31.8 °C · 74 % humedad) hacia web y Telegram.",
+      executedAt: new Date().toISOString(),
+    });
+
+    render(
+      <DemoSimulatorCard
+        accessToken="local-jwt"
+        cunaId="cuna-demo-1"
+        onSimulated={onSimulatedSpy}
+        onError={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Clima fuera de rango/i }));
+
+    await waitFor(() => {
+      expect(simSpy).toHaveBeenCalledWith("local-jwt", "cuna-demo-1", "env_alert");
+      expect(onSimulatedSpy).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/Alerta ambiental enviada/i)).toBeInTheDocument();
     });
   });
 });

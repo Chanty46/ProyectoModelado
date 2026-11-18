@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,11 +18,43 @@ CYAN = "\033[96m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
+def _build_env() -> dict[str, str]:
+    """Asegura que ~/.dotnet y ~/.local/bin estén disponibles en Windows y Linux."""
+    env = os.environ.copy()
+    sep = ";" if os.name == "nt" else ":"
+    extra: list[str] = []
+    home = Path.home()
+    if (home / ".dotnet").is_dir():
+        extra.append(str(home / ".dotnet"))
+        env.setdefault("DOTNET_ROOT", str(home / ".dotnet"))
+    if (home / ".local" / "bin").is_dir():
+        extra.append(str(home / ".local" / "bin"))
+    if extra:
+        cur = env.get("PATH", "")
+        env["PATH"] = sep.join(extra + ([cur] if cur else []))
+    return env
+
+
+def _resolve_cmd(cmd: list[str], env: dict[str, str]) -> list[str]:
+    """Resuelve ejecutables multiplataforma (ej. `npm.cmd` en Windows)."""
+    if not cmd:
+        return cmd
+    resolved = shutil.which(cmd[0], path=env.get("PATH"))
+    if not resolved and os.name == "nt":
+        for ext in (".cmd", ".exe", ".bat"):
+            resolved = shutil.which(f"{cmd[0]}{ext}", path=env.get("PATH"))
+            if resolved:
+                break
+    return [resolved or cmd[0], *cmd[1:]]
+
+
+RUNTIME_ENV = _build_env()
+
 REQUIRED_TOOLS = [
     (["dotnet", "--version"], r"^8\.", ".NET 8 SDK"),
     (["node", "--version"], r"^v(18|20|22|24)", "Node.js (>= 18)"),
     (["npm", "--version"], r"^[0-9]+", "npm"),
-    (["python3", "--version"], r"^Python 3\.(1[0-9]|[2-9][0-9])", "Python 3.10+"),
+    ([sys.executable, "--version"], r"^Python 3\.(1[0-9]|[2-9][0-9])", "Python 3.10+"),
 ]
 
 # Patrón de detección de secretos reales en el árbol rastreado por Git
@@ -39,11 +72,14 @@ def run_command(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
     """Ejecuta un subproceso capturando stdout/stderr combinados sin lanzar excepción."""
     try:
         proc = subprocess.run(
-            cmd,
+            _resolve_cmd(cmd, RUNTIME_ENV),
             cwd=cwd,
+            env=RUNTIME_ENV,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         return proc.returncode, proc.stdout
@@ -162,7 +198,7 @@ def main() -> int:
     )
     _run_step_check(
         "4. Ejecutando pruebas de Simuladores TCP (Python 3)",
-        ["python3", "-m", "unittest", "discover", "-s", "simulators", "-p", "test_*.py"],
+        [sys.executable, "-m", "unittest", "discover", "-s", "simulators", "-p", "test_*.py"],
         "Pruebas de protocolo y reglas de simuladores pasaron.",
         "Fallaron pruebas de simuladores",
         "Pruebas simuladores",
@@ -170,7 +206,7 @@ def main() -> int:
     )
     _run_step_check(
         "5. Ejecutando pruebas de Firmware MicroPython RP2040",
-        ["python3", "-m", "unittest", "discover", "-s", "firmware", "-p", "test_*.py"],
+        [sys.executable, "-m", "unittest", "discover", "-s", "firmware", "-p", "test_*.py"],
         "Pruebas de HAL, pines y lógica de firmware pasaron.",
         "Fallaron pruebas de firmware",
         "Pruebas firmware",
@@ -208,7 +244,7 @@ def main() -> int:
     )
     _run_step_check(
         "7. Verificando cliente Telegram Bot API (simulación HTTP)",
-        ["python3", "scripts/test_telegram.py", "--mock"],
+        [sys.executable, "scripts/test_telegram.py", "--mock"],
         "Prueba mock HTTP Bot API de Telegram completada.",
         "Falló prueba mock de Telegram",
         "Mock Telegram API",

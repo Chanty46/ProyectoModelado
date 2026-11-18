@@ -41,6 +41,13 @@ export function TelegramLinkCard({
   onUnlinkTelegram,
 }: TelegramLinkCardProps) {
   const botHealthy = Boolean(botStatus?.tokenConfigured && botStatus?.botReachable);
+  const displayBotHandle =
+    botStatus?.resolvedUsername ??
+    botStatus?.botUsername ??
+    "@CunaIntBot";
+  const normalizedBotHandle = displayBotHandle.startsWith("@")
+    ? displayBotHandle
+    : `@${displayBotHandle}`;
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
@@ -79,7 +86,7 @@ export function TelegramLinkCard({
         <div className="grid grid-cols-3 gap-2 text-center">
           {[
             { step: "1", title: "Genera código", hint: "Vigencia 10 min" },
-            { step: "2", title: "Envía /start", hint: "En @CunasInteligentes" },
+            { step: "2", title: "Envía /start", hint: `En ${normalizedBotHandle}` },
             { step: "3", title: "Usa /estado", hint: "Alertas en vivo < 2 s" },
           ].map((item) => (
             <div key={item.step} className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5">

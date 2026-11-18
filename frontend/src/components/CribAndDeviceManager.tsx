@@ -13,11 +13,13 @@ import { CribOverviewHeader } from "./cribs/CribOverviewHeader";
 import { DeviceNodeGrid } from "./cribs/DeviceNodeGrid";
 import { DevicePairingPanel } from "./cribs/DevicePairingPanel";
 import { BabyProfilePanel } from "./cribs/BabyProfilePanel";
+import { DemoSimulatorCard } from "./live/DemoSimulatorCard";
 
 interface CribAndDeviceManagerProps {
   accessToken: string;
   activeProfileId: string | null;
   userRole: "principal" | "secundario" | null;
+  localLoginEnabled?: boolean;
   onError: (msg: string | null) => void;
 }
 
@@ -29,11 +31,13 @@ export function CribAndDeviceManager({
   accessToken,
   activeProfileId,
   userRole,
+  localLoginEnabled = false,
   onError,
 }: CribAndDeviceManagerProps) {
   const [cribs, setCribs] = useState<CribSummaryResponse[]>([]);
   const [babies, setBabies] = useState<BabyRecord[]>([]);
   const [selectedCunaId, setSelectedCunaId] = useState<string | null>(null);
+  const [demoRefreshTick, setDemoRefreshTick] = useState<number>(0);
 
   const loadData = useCallback(async () => {
     try {
@@ -89,9 +93,22 @@ export function CribAndDeviceManager({
               cunaId={activeCribSummary.cuna.id}
               activeProfileId={activeProfileId}
               userRole={userRole}
+              refreshSignal={demoRefreshTick}
               onError={onError}
               onCribUpdated={loadData}
             />
+
+            {localLoginEnabled && (
+              <DemoSimulatorCard
+                accessToken={accessToken}
+                cunaId={activeCribSummary.cuna.id}
+                onSimulated={() => {
+                  setDemoRefreshTick((t) => t + 1);
+                  void loadData();
+                }}
+                onError={onError}
+              />
+            )}
 
             {/* M7: Alimentación (RF15–RF17, RF37), Canciones (RF12), Móvil (RF13) e Historiales (RF30–RF32) */}
             <FeedingToysAndHistoryPanel
@@ -99,6 +116,7 @@ export function CribAndDeviceManager({
               cunaId={activeCribSummary.cuna.id}
               bebeId={activeCribSummary.bebe?.id ?? babies[0]?.id ?? null}
               activeProfileId={activeProfileId}
+              refreshSignal={demoRefreshTick}
               onError={onError}
             />
 

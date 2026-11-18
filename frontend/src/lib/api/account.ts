@@ -58,8 +58,70 @@ export interface HealthStatusResponse {
   timestamp: string;
 }
 
+export interface AuthModeResponse {
+  localLoginEnabled: boolean;
+  supabaseConfigured: boolean;
+  telegramBotUsername: string;
+}
+
+export interface LocalLoginResponse {
+  accessToken: string;
+  userId: string;
+  email: string;
+  username: string;
+  expiresAt: string;
+}
+
+export interface DemoSimulateResponse {
+  action: string;
+  message: string;
+  executedAt: string;
+}
+
 /** Operaciones de cuenta, familia, perfiles de cuidador, invitaciones, auditoría y salud. */
 export const accountEndpoints = {
+  /** Consulta qué modos de acceso están activos en el backend. */
+  async getAuthMode(signal?: AbortSignal): Promise<AuthModeResponse> {
+    const response = await fetch(`${apiBaseUrl}/api/auth/mode`, { signal });
+    if (!response.ok) {
+      throw new ApiError(response.status, `Error HTTP ${response.status}`);
+    }
+    return (await response.json()) as AuthModeResponse;
+  },
+
+  /** Inicia sesión con el usuario local temporal de pruebas y presentación preliminar. */
+  async localLogin(payload: { username: string; password: string }): Promise<LocalLoginResponse> {
+    const response = await fetch(`${apiBaseUrl}/api/auth/local-login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      let msg = `Error HTTP ${response.status}`;
+      try {
+        const body = (await response.json()) as { error?: string };
+        if (body.error) {
+          msg = body.error;
+        }
+      } catch {
+        // Ignorar si no es JSON
+      }
+      throw new ApiError(response.status, msg);
+    }
+    return (await response.json()) as LocalLoginResponse;
+  },
+
+  /** Dispara un evento simulado sin hardware físico en modo demostración local. */
+  simulateDemoEvent(
+    accessToken: string,
+    cunaId: string,
+    action: string
+  ): Promise<DemoSimulateResponse> {
+    return requestJson<DemoSimulateResponse>(`/api/demo/cribs/${cunaId}/simulate`, accessToken, {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    });
+  },
   /** Obtiene el contexto de cuenta, familia, rol y perfiles del usuario autenticado. */
   getMe(accessToken: string): Promise<AccountContextResponse> {
     return requestJson<AccountContextResponse>("/api/account/me", accessToken);

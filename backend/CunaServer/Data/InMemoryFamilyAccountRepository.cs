@@ -73,6 +73,47 @@ public sealed class InMemoryFamilyAccountRepository : IFamilyAccountRepository
         }
     }
 
+    /// <summary>
+    /// Crea de forma idempotente la familia y usuario principal con IDs fijos de demostración local
+    /// para enlazar directamente con la cuna y simuladores presembrados.
+    /// </summary>
+    public FamilyRecord EnsureSeededPrincipalFamily(
+        Guid userId,
+        Guid familyId,
+        string email,
+        string familyName,
+        string profileName,
+        string avatar)
+    {
+        lock (_sync)
+        {
+            if (_members.TryGetValue(userId, out var existing) &&
+                _families.TryGetValue(existing.FamilyId, out var existingFamily))
+            {
+                return existingFamily;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var family = _families.GetOrAdd(familyId, _ => new FamilyRecord(familyId, familyName, now));
+            _members[userId] = new UserMembership(userId, family.Id, UserRoles.Principal, email, now);
+
+            if (CountActiveProfiles(family.Id) == 0)
+            {
+                var profile = new CaregiverProfileRecord(
+                    Guid.NewGuid(),
+                    family.Id,
+                    profileName,
+                    avatar,
+                    true,
+                    null,
+                    now);
+                _profiles[profile.Id] = profile;
+            }
+
+            return family;
+        }
+    }
+
     /// <inheritdoc />
     public Task<FamilyRecord?> UpdateFamilyNameAsync(Guid familyId, string newName, CancellationToken ct)
     {

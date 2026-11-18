@@ -389,7 +389,8 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
                 vinculado_en = (DateTimeOffset?)null
             },
             ct,
-            ensureSuccess: false);
+            ensureSuccess: false,
+            includeNulls: true);
 
         var updated = await _client.PatchAndReadFirstAsync<object, TelegramLinkDto>(
             $"telegram_vinculos?id=eq.{match.Id}",
@@ -400,7 +401,8 @@ public sealed class PostgrestFamilyAccountRepository : IFamilyAccountRepository
                 codigo_usado = true,
                 vinculado_en = now
             },
-            ct);
+            ct,
+            includeNulls: true);
         return updated?.ToModel();
     }
 

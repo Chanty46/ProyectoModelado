@@ -279,10 +279,21 @@ public class PostgrestRepositoryTests
         Assert.True(linked.CodigoUsado);
         Assert.Null(linked.HashCodigo);
 
+        var clearPatch = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Patch && r.RelativePathAndQuery == $"telegram_vinculos?chat_id=eq.987654321&id=neq.{matchId}");
+        using (var clearDoc = JsonDocument.Parse(clearPatch.Body!))
+        {
+            Assert.True(clearDoc.RootElement.TryGetProperty("chat_id", out var clearedChatProp));
+            Assert.Equal(JsonValueKind.Null, clearedChatProp.ValueKind);
+            Assert.True(clearDoc.RootElement.TryGetProperty("vinculado_en", out var clearedAtProp));
+            Assert.Equal(JsonValueKind.Null, clearedAtProp.ValueKind);
+        }
+
         var finalPatch = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Patch && r.RelativePathAndQuery == $"telegram_vinculos?id=eq.{matchId}");
         Assert.Contains("return=representation", finalPatch.PreferHeaders);
         using var patchDoc = JsonDocument.Parse(finalPatch.Body!);
         Assert.Equal(987654321L, patchDoc.RootElement.GetProperty("chat_id").GetInt64());
+        Assert.True(patchDoc.RootElement.TryGetProperty("hash_codigo", out var hashProp));
+        Assert.Equal(JsonValueKind.Null, hashProp.ValueKind);
         Assert.True(patchDoc.RootElement.GetProperty("codigo_usado").GetBoolean());
     }
 

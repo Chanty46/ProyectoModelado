@@ -32,7 +32,7 @@ Dispositivos: (1) Unidad Central, (2) Colchón, (3) Móvil colgante, (4) Base de
 - Si el servidor TCP se cae, el colchón y la central siguen midiendo y guardando datos offline, pero la **alarma sonora por retiro** (decide el servidor, suena en la central) no se activa. Se documenta como limitación del prototipo.
 - Sin reloj propio en la Pico: la hora llega del servidor en `hello_ack`; tras un reinicio sin red se pierde la hora real de los datos locales.
 - El tráfico TCP va sin cifrar dentro del hotspot del equipo (aprobado). Mitigación: token por dispositivo, validación estricta, red privada.
-- Email habilitado en Supabase Auth por decisión del equipo (además de Google). La app muestra Google como método principal; un usuario sin familia no ve datos gracias a RLS.
+- Email y contraseña en Supabase Auth como método principal en la nube (Google OAuth descartado por el equipo) + acceso temporal local `Padre` / `123` para pruebas y presentación preliminar; un usuario sin familia no ve datos gracias a RLS.
 
 ## 5. Hardware real de la maqueta (BOM_maqueta.pdf + Cotizacion_maqueta.xlsx)
 La cotización confirma los materiales. Pines NO definidos: se proponen en `pins.py` y se confirman con el hardware.
@@ -74,5 +74,5 @@ Se ejecutó la prueba técnica temprana de transmisión de voz unidireccional (`
 ## 7. Infraestructura ya creada (sin secretos)
 - Repositorio GitHub (privado), 5 colaboradores.
 - Supabase proyecto `rjklzbarjuaxdhryklzw` (plan gratuito: 500 MB BD, se pausa tras 1 semana sin actividad → entrar al panel semanalmente y el día antes de la demo).
-- Google OAuth configurado en modo "pruebas" con usuarios de prueba; orígenes `http://localhost:5173`.
-- Bot de Telegram `@CunasInteligentes_Modelado_Bot`. El token solo está en `backend/.env` del responsable.
+- Autenticación en Supabase Auth mediante correo y contraseña (Google OAuth descartado).
+- Bot de Telegram `@CunaIntBot` (configurado en `backend/.env` local del responsable).

@@ -174,7 +174,7 @@ public sealed partial class PostgrestDeviceTelemetryRepository : IDeviceTelemetr
             new
             {
                 cuna_id = record.CunaId,
-                dispositivo_id = record.DispositivoId,
+                dispositivo_id = record.DispositivoId == Guid.Empty ? (Guid?)null : record.DispositivoId,
                 ts = record.Ts,
                 masa_kg = record.MasaKg,
                 indice_movimiento = record.IndiceMovimiento,
@@ -198,7 +198,7 @@ public sealed partial class PostgrestDeviceTelemetryRepository : IDeviceTelemetr
             {
                 id = record.Id,
                 cuna_id = record.CunaId,
-                dispositivo_id = record.DispositivoId,
+                dispositivo_id = record.DispositivoId == Guid.Empty ? (Guid?)null : record.DispositivoId,
                 tipo = record.Tipo,
                 severidad = record.Severidad,
                 mensaje = record.Mensaje,

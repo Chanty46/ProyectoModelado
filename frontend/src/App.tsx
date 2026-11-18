@@ -27,9 +27,15 @@ export default function App() {
     activeProfileId,
     setActiveProfileId,
     loading,
+    localLoginEnabled,
+    supabaseConfigured,
+    isLoggingInLocal,
+    isAuthenticatingEmail,
     handleSelectProfile,
     refreshAccountContext,
-    handleGoogleLogin,
+    handleLocalLogin,
+    handleEmailLogin,
+    handleEmailSignUp,
     handleSignOut,
   } = useAuthSession({ onError: setErrorBanner });
 
@@ -76,7 +82,15 @@ export default function App() {
             Cargando sesión segura...
           </div>
         ) : !accessToken ? (
-          <LoginLandingView onGoogleLogin={() => void handleGoogleLogin()} />
+          <LoginLandingView
+            supabaseConfigured={supabaseConfigured}
+            isAuthenticatingEmail={isAuthenticatingEmail}
+            onEmailLogin={handleEmailLogin}
+            onEmailSignUp={handleEmailSignUp}
+            localLoginEnabled={localLoginEnabled}
+            isLoggingInLocal={isLoggingInLocal}
+            onLocalLogin={handleLocalLogin}
+          />
         ) : !account?.familia ? (
           <BootstrapFamilyForm
             accessToken={accessToken}
@@ -156,6 +170,7 @@ export default function App() {
                 accessToken={accessToken}
                 activeProfileId={activeProfileId}
                 userRole={account.rol}
+                localLoginEnabled={localLoginEnabled}
                 onError={setErrorBanner}
               />
             )}
@@ -196,8 +211,11 @@ export default function App() {
         element={
           <AcceptInvitationPage
             accessToken={accessToken}
+            supabaseConfigured={supabaseConfigured}
+            isAuthenticatingEmail={isAuthenticatingEmail}
             onAccepted={(ctx) => setAccount(ctx)}
-            onRequestGoogleLogin={() => void handleGoogleLogin()}
+            onEmailLogin={handleEmailLogin}
+            onEmailSignUp={handleEmailSignUp}
           />
         }
       />

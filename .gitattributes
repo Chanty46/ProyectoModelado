@@ -1,0 +1,5 @@
+# Mantener las estadísticas de GitHub enfocadas en los 3 lenguajes principales: C#, TypeScript y Python
+docs/** linguist-documentation
+supabase/** linguist-detectable=false
+frontend/index.html linguist-detectable=false
+frontend/src/index.css linguist-detectable=false

@@ -22,6 +22,12 @@ internal sealed class PostgrestClientHelper
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    internal static readonly JsonSerializerOptions PatchIncludeNullsJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        DefaultIgnoreCondition = JsonIgnoreCondition.Never
+    };
+
     /// <summary>
     /// Inicializa el cliente HTTP con la URL base <c>/rest/v1/</c> y los encabezados
     /// de autenticación requeridos por Supabase usando exclusivamente <c>SUPABASE_SECRET_KEY</c>.
@@ -106,10 +112,11 @@ internal sealed class PostgrestClientHelper
         string relativePathAndQuery,
         TPayload payload,
         CancellationToken ct,
-        bool ensureSuccess = true)
+        bool ensureSuccess = true,
+        bool includeNulls = false)
     {
         using var req = new HttpRequestMessage(HttpMethod.Patch, relativePathAndQuery);
-        req.Content = JsonContent.Create(payload, options: JsonOptions);
+        req.Content = JsonContent.Create(payload, options: includeNulls ? PatchIncludeNullsJsonOptions : JsonOptions);
         using var res = await _http.SendAsync(req, ct);
         if (ensureSuccess)
         {
@@ -123,11 +130,12 @@ internal sealed class PostgrestClientHelper
     public async Task<List<TResult>> PatchAndReadListAsync<TPayload, TResult>(
         string relativePathAndQuery,
         TPayload payload,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool includeNulls = false)
     {
         using var req = new HttpRequestMessage(HttpMethod.Patch, relativePathAndQuery);
         req.Headers.Add("Prefer", "return=representation");
-        req.Content = JsonContent.Create(payload, options: JsonOptions);
+        req.Content = JsonContent.Create(payload, options: includeNulls ? PatchIncludeNullsJsonOptions : JsonOptions);
         using var res = await _http.SendAsync(req, ct);
         res.EnsureSuccessStatusCode();
         return await res.Content.ReadFromJsonAsync<List<TResult>>(JsonOptions, ct) ?? [];
@@ -139,9 +147,10 @@ internal sealed class PostgrestClientHelper
     public async Task<TResult?> PatchAndReadFirstAsync<TPayload, TResult>(
         string relativePathAndQuery,
         TPayload payload,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool includeNulls = false)
     {
-        var rows = await PatchAndReadListAsync<TPayload, TResult>(relativePathAndQuery, payload, ct);
+        var rows = await PatchAndReadListAsync<TPayload, TResult>(relativePathAndQuery, payload, ct, includeNulls);
         return rows.FirstOrDefault();
     }
 
@@ -151,9 +160,10 @@ internal sealed class PostgrestClientHelper
     public async Task<TResult> PatchAndReadSingleAsync<TPayload, TResult>(
         string relativePathAndQuery,
         TPayload payload,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool includeNulls = false)
     {
-        var rows = await PatchAndReadListAsync<TPayload, TResult>(relativePathAndQuery, payload, ct);
+        var rows = await PatchAndReadListAsync<TPayload, TResult>(relativePathAndQuery, payload, ct, includeNulls);
         return rows.Single();
     }
 

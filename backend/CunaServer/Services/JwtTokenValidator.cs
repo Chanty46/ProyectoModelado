@@ -10,6 +10,37 @@ public interface IJwtTokenValidator
     Task<AuthenticatedIdentity?> ValidateBearerTokenAsync(string? authorizationHeader, CancellationToken ct);
 }
 
+public sealed class CompositeJwtTokenValidator : IJwtTokenValidator
+{
+    private readonly SupabaseJwksTokenValidator _supabaseValidator;
+    private readonly LocalDemoAuthService? _localDemoAuth;
+
+    public CompositeJwtTokenValidator(
+        SupabaseJwksTokenValidator supabaseValidator,
+        LocalDemoAuthService? localDemoAuth = null)
+    {
+        _supabaseValidator = supabaseValidator;
+        _localDemoAuth = localDemoAuth;
+    }
+
+    public Task<AuthenticatedIdentity?> ValidateBearerTokenAsync(string? authorizationHeader, CancellationToken ct)
+    {
+        if (_localDemoAuth is { IsEnabled: true } &&
+            !string.IsNullOrWhiteSpace(authorizationHeader) &&
+            authorizationHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            var rawToken = authorizationHeader["Bearer ".Length..].Trim();
+            var localIdentity = _localDemoAuth.ValidateToken(rawToken);
+            if (localIdentity is not null)
+            {
+                return Task.FromResult<AuthenticatedIdentity?>(localIdentity);
+            }
+        }
+
+        return _supabaseValidator.ValidateBearerTokenAsync(authorizationHeader, ct);
+    }
+}
+
 public sealed class SupabaseJwksTokenValidator : IJwtTokenValidator
 {
     private sealed record CachedJwk(string? Kid, string Kty, ECDsa? EcKey, RSA? RsaKey);

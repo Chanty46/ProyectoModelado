@@ -52,6 +52,26 @@ public sealed class EndToEndAndSecurityChecklistTests
         });
     }
 
+    private static string[] RunGitLsFiles(string root)
+    {
+        using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = "ls-files",
+            WorkingDirectory = root,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
+        if (proc is null)
+        {
+            return [];
+        }
+        var output = proc.StandardOutput.ReadToEnd();
+        proc.WaitForExit();
+        return output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
     private static string FindRepositoryRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
@@ -74,10 +94,12 @@ public sealed class EndToEndAndSecurityChecklistTests
         Assert.Contains(".env", gitignore);
         Assert.Contains("secrets.py", gitignore);
 
-        // Ningún archivo real .env ni secrets.py debe existir en el árbol de trabajo
-        Assert.False(File.Exists(Path.Combine(root, "backend", ".env")));
-        Assert.False(File.Exists(Path.Combine(root, "frontend", ".env")));
-        Assert.False(File.Exists(Path.Combine(root, "firmware", "secrets.py")));
+        // Ningún archivo real .env ni secrets.py debe estar rastreado por Git
+        var trackedFiles = RunGitLsFiles(root);
+        Assert.DoesNotContain(trackedFiles, f => f.Equals("backend/.env", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(trackedFiles, f => f.Equals("frontend/.env", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(trackedFiles, f => f.Equals("firmware/secrets.py", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(trackedFiles, f => f.Equals("simulators/devices.local.json", StringComparison.OrdinalIgnoreCase));
 
         // Escaneo de patrones prohibidos en archivos fuente del repositorio
         var forbiddenPattern = "(sb_secret_[A-Za-z0-9]{10}|GOCSPX-[A-Za-z0-9]{5}|" + "AAGel" + "Nrz|" + "Pr0y" + "3ct0)";
@@ -94,7 +116,8 @@ public sealed class EndToEndAndSecurityChecklistTests
 
             foreach (var file in Directory.EnumerateFiles(fullDir, "*.*", SearchOption.AllDirectories))
             {
-                if (file.Contains("/bin/") || file.Contains("/obj/") || file.Contains("/node_modules/") || file.Contains("/dist/"))
+                var normalized = file.Replace('\\', '/');
+                if (normalized.Contains("/bin/") || normalized.Contains("/obj/") || normalized.Contains("/node_modules/") || normalized.Contains("/dist/"))
                 {
                     continue;
                 }

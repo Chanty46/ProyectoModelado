@@ -17,6 +17,7 @@ interface UseLiveCribTelemetryOptions {
   accessToken: string;
   cunaId: string;
   activeProfileId: string | null;
+  refreshSignal?: number;
   onError: (msg: string | null) => void;
   onCribUpdated: () => void;
 }
@@ -30,6 +31,7 @@ export function useLiveCribTelemetry({
   accessToken,
   cunaId,
   activeProfileId,
+  refreshSignal = 0,
   onError,
   onCribUpdated,
 }: UseLiveCribTelemetryOptions) {
@@ -106,7 +108,7 @@ export function useLiveCribTelemetry({
     const controller = new AbortController();
     void fetchLiveStatus(controller.signal);
     return () => controller.abort();
-  }, [cunaId, fetchLiveStatus]);
+  }, [cunaId, refreshSignal, fetchLiveStatus]);
 
   // Cuenta regresiva cada segundo mientras esté activo el Modo Atención (RF05)
   useEffect(() => {
