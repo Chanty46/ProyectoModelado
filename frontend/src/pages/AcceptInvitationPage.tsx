@@ -51,7 +51,7 @@ export function AcceptInvitationPage({
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center p-6 bg-slate-50 text-slate-900">
+    <main className="min-h-screen flex items-center justify-center p-6 nursery-backdrop text-slate-900">
       <section className="max-w-md w-full rounded-2xl border border-slate-200 bg-white p-8 shadow-sm space-y-5">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-teal-50 text-teal-600">

@@ -39,7 +39,7 @@ export default function App() {
   const activeCaregiver = account?.perfiles.find((p) => p.id === activeProfileId) ?? null;
 
   const mainDashboard = (
-    <div className="min-h-screen nursery-backdrop text-slate-900">
+    <div className="min-h-screen flex flex-col nursery-backdrop text-slate-900">
       <DashboardHeader
         account={account}
         activeCaregiver={activeCaregiver}
@@ -49,7 +49,7 @@ export default function App() {
         onSignOut={() => void handleSignOut()}
       />
 
-      <main className="mx-auto max-w-5xl p-6 space-y-6">
+      <main className="flex-1 w-full mx-auto max-w-5xl p-6 space-y-6">
         {errorBanner && (
           <div
             role="alert"
@@ -181,6 +181,10 @@ export default function App() {
           </div>
         )}
       </main>
+
+      <footer className="border-t border-slate-200/70 bg-white/60 py-3 px-6 text-center text-[11px] text-slate-500">
+        Cuna Inteligente · Panel familiar local (Web · API .NET 8 · Pico W TCP · Supabase RLS)
+      </footer>
     </div>
   );
 
