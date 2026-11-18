@@ -30,12 +30,14 @@ export function TelemetryMetricCards({
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-1.5">
-        <div className="flex items-center justify-between text-xs text-slate-500">
-          <span>Temperatura (RF07)</span>
-          <Thermometer className="h-4 w-4 text-teal-600" aria-hidden="true" />
+      <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm hover:border-slate-300 transition-colors space-y-2">
+        <div className="flex items-center justify-between text-xs text-slate-600">
+          <span className="font-medium">Temperatura (RF07)</span>
+          <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
+            <Thermometer className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
         </div>
-        <p className="text-lg font-bold text-slate-900">
+        <p className="text-lg font-bold tabular-nums text-slate-900">
           {latest?.tempC !== null && latest?.tempC !== undefined ? `${latest.tempC.toFixed(1)} °C` : "—"}
         </p>
         <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
@@ -50,17 +52,30 @@ export function TelemetryMetricCards({
             style={{ width: `${tempBand.barPercent}%` }}
           />
         </div>
-        <p className="text-[11px] text-slate-500">
-          Umbral: {thresholds.tempMin}–{thresholds.tempMax} °C
-        </p>
+        <div className="flex items-center justify-between gap-1 text-[11px] text-slate-500">
+          <span>Umbral: {thresholds.tempMin}–{thresholds.tempMax} °C</span>
+          <span
+            className={`font-medium ${
+              tempBand.status === "ok"
+                ? "text-emerald-700"
+                : tempBand.status === "unknown"
+                ? "text-slate-400"
+                : "text-amber-700"
+            }`}
+          >
+            {tempBand.label}
+          </span>
+        </div>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-1.5">
-        <div className="flex items-center justify-between text-xs text-slate-500">
-          <span>Humedad (RF07)</span>
-          <Droplets className="h-4 w-4 text-sky-600" aria-hidden="true" />
+      <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm hover:border-slate-300 transition-colors space-y-2">
+        <div className="flex items-center justify-between text-xs text-slate-600">
+          <span className="font-medium">Humedad (RF07)</span>
+          <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-sky-50 text-sky-600">
+            <Droplets className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
         </div>
-        <p className="text-lg font-bold text-slate-900">
+        <p className="text-lg font-bold tabular-nums text-slate-900">
           {latest?.humedad !== null && latest?.humedad !== undefined ? `${latest.humedad.toFixed(1)} %` : "—"}
         </p>
         <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
@@ -75,17 +90,30 @@ export function TelemetryMetricCards({
             style={{ width: `${humBand.barPercent}%` }}
           />
         </div>
-        <p className="text-[11px] text-slate-500">
-          Umbral: {thresholds.humMin}–{thresholds.humMax} %
-        </p>
+        <div className="flex items-center justify-between gap-1 text-[11px] text-slate-500">
+          <span>Umbral: {thresholds.humMin}–{thresholds.humMax} %</span>
+          <span
+            className={`font-medium ${
+              humBand.status === "ok"
+                ? "text-sky-700"
+                : humBand.status === "unknown"
+                ? "text-slate-400"
+                : "text-amber-700"
+            }`}
+          >
+            {humBand.label}
+          </span>
+        </div>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-1.5">
-        <div className="flex items-center justify-between text-xs text-slate-500">
-          <span>Masa Colchón (D14)</span>
-          <Scale className="h-4 w-4 text-indigo-600" aria-hidden="true" />
+      <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm hover:border-slate-300 transition-colors space-y-2">
+        <div className="flex items-center justify-between text-xs text-slate-600">
+          <span className="font-medium">Masa Colchón (D14)</span>
+          <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+            <Scale className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
         </div>
-        <p className="text-lg font-bold text-slate-900">
+        <p className="text-lg font-bold tabular-nums text-slate-900">
           {latest?.masaKg !== null && latest?.masaKg !== undefined ? `${latest.masaKg.toFixed(3)} kg` : "—"}
         </p>
         <span
@@ -100,12 +128,14 @@ export function TelemetryMetricCards({
         </span>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-1.5">
-        <div className="flex items-center justify-between text-xs text-slate-500">
-          <span>Movimiento (RF06/29)</span>
-          <Activity className="h-4 w-4 text-amber-600" aria-hidden="true" />
+      <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm hover:border-slate-300 transition-colors space-y-2">
+        <div className="flex items-center justify-between text-xs text-slate-600">
+          <span className="font-medium">Movimiento (RF06/29)</span>
+          <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
+            <Activity className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
         </div>
-        <p className="text-lg font-bold text-slate-900">
+        <p className="text-lg font-bold tabular-nums text-slate-900">
           {latest?.indiceMovimiento !== null && latest?.indiceMovimiento !== undefined
             ? `${latest.indiceMovimiento.toFixed(3)} kg/m`
             : "—"}

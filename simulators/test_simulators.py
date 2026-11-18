@@ -161,6 +161,40 @@ class SimulatorProtocolAndRulesTests(unittest.TestCase):
         next_msg = buf.enqueue("telemetry", {"temp_c": 22.0})
         self.assertEqual(next_msg["seq"], 43)
 
+    def test_load_local_devices_and_node_override(self) -> None:
+        import json
+        import tempfile
+        import os
+        try:
+            from simulators.run_simulators import DeviceSimulatorNode, load_local_devices
+        except ImportError:
+            from run_simulators import DeviceSimulatorNode, load_local_devices
+
+        self.assertEqual(load_local_devices("/tmp/no-existe-devices-local-xyz.json"), {})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = os.path.join(tmp, "devices.local.json")
+            payload = {
+                "central": {"device_id": "pico-real-1", "token": "tok-real-123"},
+                "invalido": {"device_id": "x", "token": "y"},
+                "colchon": {"device_id": "pico-colchon-1", "token": ""},
+            }
+            with open(cfg_path, "w", encoding="utf-8-sig") as fh:
+                json.dump(payload, fh)
+
+            loaded = load_local_devices(cfg_path)
+            self.assertEqual(list(loaded.keys()), ["central"])
+
+            node = DeviceSimulatorNode(
+                "127.0.0.1",
+                9000,
+                "central",
+                once=True,
+                override=loaded["central"],
+            )
+            self.assertEqual(node.device_id, "pico-real-1")
+            self.assertEqual(node.token, "tok-real-123")
+
 
 if __name__ == "__main__":
     unittest.main()

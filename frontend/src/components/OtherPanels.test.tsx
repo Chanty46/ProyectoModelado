@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ProfileSelectorBar } from "./ProfileSelectorBar";
 import { IntercomPushToTalk } from "./IntercomPushToTalk";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { accountApi, type CaregiverProfileRecord } from "../lib/api";
+import { accountApi, ApiError, type CaregiverProfileRecord } from "../lib/api";
 
 const mockProfiles: CaregiverProfileRecord[] = [
   {
@@ -144,6 +144,24 @@ describe("IntercomPushToTalk Component", () => {
       expect(
         screen.getByText(/Bloque procesado \(la Unidad Central está desconectada actualmente\)/i)
       ).toBeInTheDocument();
+    });
+  });
+
+  it("supports Space key hold-to-talk fallback and surfaces ApiError", async () => {
+    const sendChunkSpy = vi
+      .spyOn(accountApi, "sendIntercomChunk")
+      .mockRejectedValueOnce(new ApiError(409, "Cuna fuera de línea"));
+
+    render(<IntercomPushToTalk {...defaultProps} />);
+
+    const holdBtn = screen.getByRole("button", {
+      name: /Transmitir bloque de voz por intercomunicador/i,
+    });
+    fireEvent.keyDown(holdBtn, { key: " " });
+
+    await waitFor(() => {
+      expect(sendChunkSpy).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Cuna fuera de línea")).toBeInTheDocument();
     });
   });
 });

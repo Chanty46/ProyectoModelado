@@ -160,6 +160,13 @@ export function IntercomPushToTalk({ accessToken, cunaId }: IntercomPushToTalkPr
           <span className="text-xs font-semibold text-slate-800">
             Intercomunicador de Voz (RF11 — Spike M8)
           </span>
+          {transmitting && (
+            <span className="inline-flex items-end gap-0.5 h-3" aria-hidden="true">
+              <span className="w-0.5 h-2 rounded-full bg-teal-500 animate-pulse" />
+              <span className="w-0.5 h-3 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="w-0.5 h-1.5 rounded-full bg-teal-500 animate-pulse" />
+            </span>
+          )}
         </div>
         <span className="text-[11px] text-slate-500">PCM 8-bit 8 kHz · Tope ≤ 65 dBA</span>
       </div>

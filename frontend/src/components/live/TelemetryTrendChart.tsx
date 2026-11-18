@@ -1,3 +1,4 @@
+import { Activity } from "lucide-react";
 import {
   CartesianGrid,
   Legend,
@@ -30,14 +31,22 @@ export function TelemetryTrendChart({ samples }: TelemetryTrendChartProps) {
   }));
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-      <h4 className="text-xs font-semibold text-slate-900 mb-2">
-        Tendencia de Microclima y Movimiento (Tiempo Real)
-      </h4>
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold text-slate-900">
+          Tendencia de Microclima y Movimiento (Tiempo Real)
+        </h4>
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 tabular-nums">
+          {chartData.length} muestras
+        </span>
+      </div>
       {chartData.length === 0 ? (
-        <p className="text-xs text-slate-500 py-6 text-center">
-          Sin muestras recientes de telemetría.
-        </p>
+        <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/70 py-6 text-center">
+          <Activity className="h-5 w-5 text-slate-400 mb-1" aria-hidden="true" />
+          <p className="text-xs text-slate-500">
+            Sin muestras recientes de telemetría.
+          </p>
+        </div>
       ) : (
         <div className="h-44 w-full">
           <ResponsiveContainer width="100%" height="100%">

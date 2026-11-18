@@ -39,8 +39,13 @@ export function DashboardHeader({
                 Cuna Inteligente
               </h1>
               {activeCaregiver && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-teal-50 border border-teal-200 px-2 py-0.5 text-[11px] font-medium text-teal-800">
-                  <span className="h-1.5 w-1.5 rounded-full bg-teal-500" aria-hidden="true" />
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-teal-50 border border-teal-200 pl-1 pr-2.5 py-0.5 text-[11px] font-medium text-teal-800">
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-teal-600 text-[9px] font-bold text-white"
+                  >
+                    {activeCaregiver.avatar.slice(0, 2).toUpperCase()}
+                  </span>
                   <span className="sm:hidden">{activeCaregiver.nombre.split(" ")[0]}</span>
                   <span className="hidden sm:inline">Turno: {activeCaregiver.nombre}</span>
                 </span>

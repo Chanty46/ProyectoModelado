@@ -29,11 +29,20 @@ export function CribStatusBanner({
       : null;
   const lampGlowOpacity = crib.luzEncendida ? Math.max(0.15, crib.luzNivel / 100) : 0;
 
+  const containerTheme =
+    crib.modoOperacion === "alarma"
+      ? "border-red-300 border-l-4 border-l-red-600 bg-red-50/70"
+      : crib.modoOperacion === "atencion"
+      ? "border-amber-300 border-l-4 border-l-amber-500 bg-amber-50/60"
+      : "border-slate-200 border-l-4 border-l-emerald-500 bg-white";
+
   return (
-    <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div
+      className={`flex flex-wrap items-center justify-between gap-4 rounded-xl border p-4 shadow-sm transition-colors ${containerTheme}`}
+    >
       <div className="flex items-center gap-3.5">
         {/* Indicador visual del estado de cuna + luz nocturna */}
-        <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-slate-900 text-white overflow-hidden">
+        <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-slate-900 text-white overflow-hidden shadow-inner">
           {crib.luzEncendida && (
             <div
               aria-hidden="true"
@@ -77,7 +86,7 @@ export function CribStatusBanner({
               {rgbVisual.label}
             </span>
             {attentionCountdown && (
-              <span className="rounded-full bg-amber-100 px-2 py-0.5 font-mono text-[11px] font-semibold text-amber-900">
+              <span className="rounded-full bg-amber-100 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-amber-900">
                 Restante: {attentionCountdown}
               </span>
             )}
@@ -98,7 +107,7 @@ export function CribStatusBanner({
               </span>
             )}
           </div>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-xs text-slate-600 mt-1">
             {crib.modoOperacion === "atencion" && crib.modoAtencionExpiraEn
               ? `Alarma de retiro inhibida hasta las ${new Date(crib.modoAtencionExpiraEn).toLocaleTimeString()} (15 min)`
               : "Retiro imprevisto activa ventana de gracia de 5 s antes de sonar alarma en Central."}

@@ -160,6 +160,7 @@ describe("TelegramAndRemindersPanel Component", () => {
         activo: true,
         perfilId: "prof-1",
       });
+      expect(screen.getByText("Configuración de recordatorio guardada.")).toBeInTheDocument();
     });
   });
 });
