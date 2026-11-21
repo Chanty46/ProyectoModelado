@@ -9,6 +9,10 @@ import {
   type SleepSessionRecord,
 } from "../lib/api";
 
+// El control del móvil habla directo con Supabase; aquí se prueba sin cliente.
+// Sus pruebas propias están en feeding/MobileControlCard.test.tsx.
+vi.mock("../lib/supabase", () => ({ supabase: null }));
+
 const mockSongs: SongCatalogItem[] = [
   { id: "song-1", codigo: "estrellita", nombre: "Estrellita dónde estás", duracionSegundos: 45, notasJson: "[]" },
   { id: "song-2", codigo: "nana_brahms", nombre: "Canción de Cuna de Brahms", duracionSegundos: 60, notasJson: "[]" },
@@ -190,7 +194,7 @@ describe("FeedingToysAndHistoryPanel Component", () => {
       });
     });
 
-    const stopBtn = screen.getByRole("button", { name: /Detener/i });
+    const stopBtn = screen.getByRole("button", { name: /^Detener$/i });
     fireEvent.click(stopBtn);
 
     await waitFor(() => {
@@ -202,43 +206,13 @@ describe("FeedingToysAndHistoryPanel Component", () => {
     });
   });
 
-  it("renders 9-LED mobile animated preview and dispatches mobile activation", async () => {
-    const playMobileSpy = vi.spyOn(accountApi, "playMobile").mockResolvedValue({
-      id: "toy-rec-1",
-      cunaId: "cuna-test-1",
-      tipo: "movil",
-      perfilId: "prof-1",
-      inicio: new Date().toISOString(),
-      duracionSegundos: 60,
-      aciertos: null,
-      patron: "cascada_suave",
-      velocidad: "rapida",
-    });
-
+  it("renders the mobile control card next to the songs card", async () => {
     render(<FeedingToysAndHistoryPanel {...defaultProps} />);
 
-    await waitFor(() => {
-      expect(screen.getByLabelText(/Simulación de los 9 LEDs del móvil/i)).toBeInTheDocument();
-      expect(screen.getByText(/Vista previa 9 LEDs/i)).toBeInTheDocument();
-    });
-
-    const patternSelect = screen.getByLabelText(/Patrón del móvil de LEDs/i);
-    fireEvent.change(patternSelect, { target: { value: "cascada_suave" } });
-
-    const speedSelect = screen.getByLabelText(/Velocidad del móvil/i);
-    fireEvent.change(speedSelect, { target: { value: "rapida" } });
-
-    const submitMobileBtn = screen.getByRole("button", { name: /Móvil \(60s\)/i });
-    fireEvent.click(submitMobileBtn);
-
-    await waitFor(() => {
-      expect(playMobileSpy).toHaveBeenCalledWith("mock-jwt-token", "cuna-test-1", {
-        patron: "cascada_suave",
-        velocidad: "rapida",
-        duracionSegundos: 60,
-        perfilId: "prof-1",
-      });
-    });
+    expect(await screen.findByText(/Móvil colgante de 9 LEDs/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Vista previa aproximada de los 9 LEDs del móvil/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Encender móvil/i })).toBeInTheDocument();
+    expect(screen.getByText(/Melodías PWM \(RF12\)/i)).toBeInTheDocument();
   });
 
   it("handles history export to CSV and PDF cleanly", async () => {

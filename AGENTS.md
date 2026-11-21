@@ -5,6 +5,7 @@ Web (React) + backend C# (.NET) con servidor TCP + Supabase (PostgreSQL/Auth/Rea
 Demostración local en la laptop del responsable; no se publica en Internet.
 
 ## Orden de lectura (solo lo que la tarea necesite)
+0. `docs/ESTADO_SESION.md` — estado actual, trabajo en curso, pendientes y cómo trabajar con el usuario. Leerlo siempre al iniciar una sesión nueva.
 1. `docs/PROJECT_CONTEXT.md` — decisiones vigentes (anulan al ERS/diagramas donde difieran).
 2. `docs/IMPLEMENTATION_ARCHITECTURE.md` y `docs/PROTOCOL.md` — cómo se construye.
 3. `docs/FUNCTIONAL_REQUIREMENTS.md` — índice de RF/RNF con módulo y estado. Detalle: `docs/source/ERS_v1_0.md` (abrir solo el RF necesario).

@@ -27,6 +27,7 @@ Dispositivos: (1) Unidad Central, (2) Colchón, (3) Móvil colgante, (4) Base de
 | D11 | Web Push | PWA con Push | Opcional y al final (alerta de escritorio). En iOS requiere versiones recientes y PWA instalada; se avisa al profesor. |
 | D12 | Memoria | Flash externa 16 MB | Solo los ~2 MB de la Pico: búfer de 48 h con registros **agregados por minuto**; canciones como secuencias de notas, no audio grabado. |
 | D13 | OTA (RNF06) | Reversión < 15 s | Fuera del alcance de la maqueta salvo que se apruebe. Compatibilidad web Android 10+/iOS 14+ se mantiene. |
+| D15 | Móvil colgante (RF13) | Comando por TCP desde el backend (D1/D3) | **La Pico W del móvil consulta Supabase directamente** cada segundo con las RPC `dispositivo_comandos_pendientes` y `dispositivo_confirmar_comando` (token en `cunas.token_dispositivo`). La web inserta `movil_on` / `movil_off` en `public.comandos` y espera la confirmación por Realtime (10 s). RLS: los miembros solo leen e insertan comandos válidos de sus cunas; no pueden confirmarlos. Migración `20261119120000_comandos_movil_realtime_rls.sql`. Las RPC y las columnas nuevas se crearon a mano en Supabase y no están en `supabase/migrations/`. |
 
 ## 4. Limitaciones aceptadas
 - Si el servidor TCP se cae, el colchón y la central siguen midiendo y guardando datos offline, pero la **alarma sonora por retiro** (decide el servidor, suena en la central) no se activa. Se documenta como limitación del prototipo.
