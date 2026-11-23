@@ -41,6 +41,7 @@ public sealed class LocalDemoAuthService
     public static readonly Guid DemoFamilyId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     public static readonly Guid DemoCribId = Guid.Parse("aaaaaaaa-c001-4000-8000-000000000001");
     public const string DemoEmail = "padre@cuna.local";
+    public const int DefaultTokenLifetimeHours = 24;
 
     private readonly byte[] _signingKey = RandomNumberGenerator.GetBytes(32);
     private readonly IFamilyAccountRepository _accountRepo;
@@ -54,6 +55,7 @@ public sealed class LocalDemoAuthService
     private readonly string _expectedPasswordHash;
     private readonly string _botUsername;
     private readonly bool _supabaseConfigured;
+    private readonly int _tokenLifetimeHours;
     private long _demoSeq = 9000;
 
     public bool IsEnabled { get; }
@@ -90,6 +92,9 @@ public sealed class LocalDemoAuthService
 
         var handle = (configuration["TELEGRAM_BOT_USERNAME"] ?? "CunaIntBot").Trim().TrimStart('@');
         _botUsername = $"@{handle}";
+        _tokenLifetimeHours = int.TryParse(configuration["LOCAL_DEMO_TOKEN_HOURS"], out var hours)
+            ? Math.Clamp(hours, 1, 168)
+            : DefaultTokenLifetimeHours;
     }
 
     public AuthModeResponse GetAuthMode()
@@ -137,7 +142,7 @@ public sealed class LocalDemoAuthService
         await EnsureDemoWorkspaceSeededAsync(ct);
 
         var now = DateTimeOffset.UtcNow;
-        var expiresAt = now.AddHours(12);
+        var expiresAt = now.AddHours(_tokenLifetimeHours);
         var token = IssueToken(DemoUserId, DemoEmail, expiresAt);
 
         await _accountRepo.LogSecurityEventAsync(new SecurityAuditEntry(

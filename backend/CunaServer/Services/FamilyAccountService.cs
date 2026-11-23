@@ -28,13 +28,19 @@ public sealed record ServiceResult<T>(
 
 public sealed class FamilyAccountService
 {
+    public const int DefaultInvitationExpirationHours = 72;
+
     private readonly IFamilyAccountRepository _repository;
     private readonly string _allowedWebOrigin;
+    private readonly int _invitationExpirationHours;
 
     public FamilyAccountService(IFamilyAccountRepository repository, IConfiguration configuration)
     {
         _repository = repository;
         _allowedWebOrigin = (configuration["ALLOWED_WEB_ORIGIN"] ?? "http://localhost:5173").TrimEnd('/');
+        _invitationExpirationHours = int.TryParse(configuration["INVITATION_EXPIRATION_HOURS"], out var hours)
+            ? Math.Clamp(hours, 1, 168)
+            : DefaultInvitationExpirationHours;
     }
 
     public async Task<AccountContextResponse> GetAccountContextAsync(
@@ -243,7 +249,7 @@ public sealed class FamilyAccountService
 
         var rawToken = CryptoTokenHelper.GenerateOpaqueToken(32);
         var hashCodigo = CryptoTokenHelper.ComputeSha256Hex(rawToken);
-        var expiraEn = DateTimeOffset.UtcNow.AddHours(24);
+        var expiraEn = DateTimeOffset.UtcNow.AddHours(_invitationExpirationHours);
 
         var record = await _repository.CreateInvitationAsync(
             membership.FamilyId,

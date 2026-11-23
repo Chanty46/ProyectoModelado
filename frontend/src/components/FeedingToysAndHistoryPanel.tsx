@@ -8,7 +8,8 @@ import {
   type ToysAndPeripheralsStatusResponse,
 } from "../lib/api";
 import { FeedingSessionCard } from "./feeding/FeedingSessionCard";
-import { SongsAndMobileCard } from "./feeding/SongsAndMobileCard";
+import { SongsCard } from "./feeding/SongsCard";
+import { MobileControlCard } from "./feeding/MobileControlCard";
 import { HistoryAndExportCard } from "./feeding/HistoryAndExportCard";
 
 interface FeedingToysAndHistoryPanelProps {
@@ -145,17 +146,19 @@ export function FeedingToysAndHistoryPanel({
           onError={onError}
         />
 
-        <SongsAndMobileCard
-          accessToken={accessToken}
-          cunaId={cunaId}
-          activeProfileId={activeProfileId}
-          songs={songs}
-          selectedSongCode={selectedSongCode}
-          toysStatus={toysStatus}
-          onSelectSong={setSelectedSongCode}
-          onMobileActivated={() => loadCribPeripherals(false)}
-          onError={onError}
-        />
+        <div className="space-y-4">
+          <MobileControlCard cunaId={cunaId} />
+          <SongsCard
+            accessToken={accessToken}
+            cunaId={cunaId}
+            activeProfileId={activeProfileId}
+            songs={songs}
+            selectedSongCode={selectedSongCode}
+            toysStatus={toysStatus}
+            onSelectSong={setSelectedSongCode}
+            onError={onError}
+          />
+        </div>
       </div>
 
       <HistoryAndExportCard

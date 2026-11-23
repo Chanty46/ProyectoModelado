@@ -432,6 +432,7 @@ FodyWeavers.xsd
 secrets.py
 **/secrets.py
 simulators/devices.local.json
+firmware/movil_supabase/config.py
 
 # Dependencias locales y carpetas generadas
 node_modules/

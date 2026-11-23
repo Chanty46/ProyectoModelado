@@ -57,12 +57,13 @@ public class PairingAndCribEndpointsTests
             "Cuna Principal"));
         Assert.Equal(HttpStatusCode.BadRequest, noWinResp.StatusCode);
 
-        // 3. Abrir ventana de emparejamiento de 10 minutos (RF24)
+        // 3. Abrir ventana de emparejamiento de 60 minutos (RF24)
         var winResp = await client.PostAsync("/api/pairing/window", null);
         Assert.Equal(HttpStatusCode.OK, winResp.StatusCode);
         var winBody = await winResp.Content.ReadFromJsonAsync<OpenPairingWindowResponse>();
         Assert.NotNull(winBody);
-        Assert.Equal(10, winBody.VentanaMinutos);
+        Assert.Equal(PairingAndCribService.PairingWindowMinutes, winBody.VentanaMinutos);
+        Assert.True(winBody.ExpiraEn > DateTimeOffset.UtcNow.AddMinutes(55));
 
         // 4. Reclamar Unidad Central de fábrica -> crea cuna nueva y emite token de 32 bytes (RF24/RF25)
         var claimCentralResp = await client.PostAsJsonAsync("/api/pairing/claim", new ClaimDeviceRequest(

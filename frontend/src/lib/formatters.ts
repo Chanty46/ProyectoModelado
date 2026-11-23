@@ -143,32 +143,49 @@ export function parseOptionalFiniteNumber(raw: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/** Calcula el estado encendido/apagado de los 9 LEDs del móvil colgante para previsualización visual (RF13). */
+/** Orden de recorrido en espiral sobre la cuadrícula 3×3 (índices fila*3 + columna). */
+const SPIRAL_ORDER_3X3 = [0, 1, 2, 5, 8, 7, 6, 3, 4];
+
+/**
+ * Vista previa aproximada de los 9 LEDs del móvil colgante (RF13) como cuadrícula 3×3.
+ * Solo es una animación orientativa en la web: el patrón real lo ejecuta el firmware.
+ * Patrones: secuencia, parpadeo, columnas, filas, espiral.
+ */
 export function computeMobileLedFrame(pattern: string, step: number, count: number = 9): boolean[] {
   const safeCount = Math.max(1, count);
   const frame = new Array<boolean>(safeCount).fill(false);
   const safeStep = Math.max(0, Math.floor(step));
+  const side = Math.max(1, Math.round(Math.sqrt(safeCount)));
 
-  if (pattern === "cascada_suave") {
-    const lit = safeStep % (safeCount + 1);
-    for (let i = 0; i < lit; i++) {
-      frame[i] = true;
-    }
-    return frame;
+  if (pattern === "parpadeo") {
+    return frame.fill(safeStep % 2 === 0);
   }
 
-  if (pattern === "destello_alterno") {
-    const parity = safeStep % 2;
+  if (pattern === "columnas") {
+    const col = safeStep % side;
     for (let i = 0; i < safeCount; i++) {
-      frame[i] = i % 2 === parity;
+      frame[i] = i % side === col;
     }
     return frame;
   }
 
-  // Por defecto: ola_circular (dos LEDs contiguos girando en anillo)
-  const head = safeStep % safeCount;
-  const tail = (head + safeCount - 1) % safeCount;
-  frame[head] = true;
-  frame[tail] = true;
+  if (pattern === "filas") {
+    const row = safeStep % side;
+    for (let i = 0; i < safeCount; i++) {
+      frame[i] = Math.floor(i / side) === row;
+    }
+    return frame;
+  }
+
+  if (pattern === "espiral" && safeCount === 9) {
+    const lit = safeStep % (SPIRAL_ORDER_3X3.length + 1);
+    for (let i = 0; i < lit; i++) {
+      frame[SPIRAL_ORDER_3X3[i]] = true;
+    }
+    return frame;
+  }
+
+  // Por defecto: secuencia (un LED a la vez, recorriendo los 9 en orden)
+  frame[safeStep % safeCount] = true;
   return frame;
 }

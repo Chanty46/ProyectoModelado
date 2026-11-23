@@ -85,7 +85,7 @@ export function TelegramLinkCard({
 
         <div className="grid grid-cols-3 gap-2 text-center">
           {[
-            { step: "1", title: "Genera código", hint: "Vigencia 10 min" },
+            { step: "1", title: "Genera código", hint: "Vigencia 60 min" },
             { step: "2", title: "Envía /start", hint: `En ${normalizedBotHandle}` },
             { step: "3", title: "Usa /estado", hint: "Alertas en vivo < 2 s" },
           ].map((item) => (
@@ -180,7 +180,7 @@ export function TelegramLinkCard({
         >
           {isGeneratingCode
             ? "Generando código..."
-            : "Generar código de vinculación de 1 uso (10 min)"}
+            : "Generar código de vinculación de 1 uso (60 min)"}
         </button>
       )}
 

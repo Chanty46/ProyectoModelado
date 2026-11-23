@@ -12,7 +12,7 @@ namespace CunaServer.Telegram;
 /// </summary>
 public sealed class TelegramBotService
 {
-    public const int LinkCodeExpirationMinutes = 10;
+    public const int LinkCodeExpirationMinutes = 60;
     public const int MaxFailedLinkAttemptsPerChat = 5;
     public static readonly TimeSpan LinkLockoutDuration = TimeSpan.FromMinutes(10);
 
@@ -23,6 +23,7 @@ public sealed class TelegramBotService
     private readonly ITelegramBotTransport _transport;
     private readonly string _botUsername;
     private readonly string _cleanBotHandle;
+    private readonly int _linkCodeExpirationMinutes;
     private readonly ConcurrentDictionary<long, ChatLinkAttemptState> _linkAttemptsByChat = new();
 
     public TelegramBotService(
@@ -40,6 +41,9 @@ public sealed class TelegramBotService
             ? "CunasInteligentes_Modelado_Bot"
             : configuredHandle.Trim().TrimStart('@');
         _botUsername = $"@{_cleanBotHandle}";
+        _linkCodeExpirationMinutes = int.TryParse(config?["TELEGRAM_LINK_CODE_MINUTES"], out var parsedMin)
+            ? Math.Clamp(parsedMin, 5, 1440)
+            : LinkCodeExpirationMinutes;
     }
 
     private string TransportMode => _transport is HttpTelegramBotTransport ? "telegram_http" : "inmemory";
@@ -68,7 +72,7 @@ public sealed class TelegramBotService
     }
 
     /// <summary>
-    /// RF38: Genera un código criptográfico de un solo uso (10 min de vigencia) almacenado únicamente como hash SHA-256.
+    /// RF38: Genera un código criptográfico de un solo uso (60 min por defecto, configurable) almacenado únicamente como hash SHA-256.
     /// </summary>
     public async Task<ServiceResult<GenerateTelegramCodeResponse>> GenerateLinkCodeAsync(
         AuthenticatedIdentity identity,
@@ -84,7 +88,7 @@ public sealed class TelegramBotService
         var rawToken = CryptoTokenHelper.GenerateOpaqueToken(9).ToUpperInvariant();
         var code = $"TG-{rawToken}";
         var codeHash = CryptoTokenHelper.ComputeSha256Hex(code);
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(LinkCodeExpirationMinutes);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(_linkCodeExpirationMinutes);
 
         await _accountRepo.SaveTelegramLinkCodeAsync(identity.UserId, codeHash, expiresAt, ct);
 
