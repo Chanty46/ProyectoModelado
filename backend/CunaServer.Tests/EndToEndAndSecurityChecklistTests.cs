@@ -69,7 +69,7 @@ public sealed class EndToEndAndSecurityChecklistTests
         }
         var output = proc.StandardOutput.ReadToEnd();
         proc.WaitForExit();
-        return output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     private static string FindRepositoryRoot()

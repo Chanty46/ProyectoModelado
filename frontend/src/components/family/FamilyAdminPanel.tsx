@@ -244,13 +244,13 @@ export function FamilyAdminPanel({
                 onClick={() => void handleCreateInvitation()}
                 className="w-full rounded-xl border border-teal-600 bg-teal-50 px-4 py-2 text-xs font-medium text-teal-800 hover:bg-teal-100"
               >
-                Generar enlace de invitación de 1 uso (24 h)
+                Generar enlace de invitación de 1 uso (72 h)
               </button>
 
               {invitationResult && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
                   <p className="text-[11px] font-medium text-slate-700">
-                    Comparte este enlace manualmente (se muestra una sola vez, vence en 24 h):
+                    Comparte este enlace manualmente (se muestra una sola vez, vence en 72 h):
                   </p>
                   <div className="flex items-center gap-2">
                     <input

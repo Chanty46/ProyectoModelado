@@ -16,7 +16,7 @@
 #     exactos, así la red no la frena y las tres velocidades se notan.
 # =====================================================================
 from machine import Pin
-import network, time, json, _thread
+import gc, network, time, json, _thread
 import urequests as requests
 import config
 
@@ -173,7 +173,11 @@ HEADERS = {
 
 def rpc(nombre, datos):
     url = config.SUPABASE_URL + "/rest/v1/rpc/" + nombre
-    r = requests.post(url, headers=HEADERS, data=json.dumps(datos))
+    body = json.dumps(datos)
+    try:
+        r = requests.post(url, headers=HEADERS, data=body, timeout=5)
+    except TypeError:
+        r = requests.post(url, headers=HEADERS, data=body)
     try:
         if r.status_code >= 300:
             print("Error de Supabase", r.status_code, r.text)
@@ -228,6 +232,7 @@ def main():
                     revisar_comandos()
             except Exception as e:
                 print("Error de red:", e)
+            gc.collect()
         time.sleep_ms(20)
 
 

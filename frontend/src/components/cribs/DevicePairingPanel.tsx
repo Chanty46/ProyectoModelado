@@ -18,7 +18,7 @@ interface DevicePairingPanelProps {
 
 /**
  * Panel de emparejamiento seguro de dispositivos Pico W (RF24).
- * Permite al Usuario Principal abrir una ventana de 10 minutos, reclamar nodos por
+ * Permite al Usuario Principal abrir una ventana de 60 minutos, reclamar nodos por
  * `device_id` + código de fábrica y copiar el bloque `secrets.py` mostrado una única vez.
  */
 export function DevicePairingPanel({
@@ -111,7 +111,7 @@ export function DevicePairingPanel({
       {isPrincipal ? (
         <>
           <p className="text-xs text-slate-600">
-            El Usuario Principal abre una ventana de 10 minutos e introduce el identificador de fábrica y código de reclamo del dispositivo (máximo 5 intentos).
+            El Usuario Principal abre una ventana de 60 minutos e introduce el identificador de fábrica y código de reclamo del dispositivo (máximo 5 intentos).
           </p>
 
           <button
@@ -119,7 +119,7 @@ export function DevicePairingPanel({
             onClick={() => void handleOpenPairingWindow()}
             className="w-full rounded-xl border border-teal-600 bg-teal-50 px-4 py-2 text-xs font-medium text-teal-800 hover:bg-teal-100"
           >
-            Abrir ventana de emparejamiento (10 min)
+            Abrir ventana de emparejamiento (60 min)
           </button>
 
           {pairingWindow && (

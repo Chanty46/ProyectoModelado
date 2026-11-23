@@ -35,7 +35,7 @@ public static class TelegramMessages
         "     Cómo está la cuna ahora: bebé, temperatura, humedad y última toma.\n" +
         "\n" +
         "/vincular CÓDIGO\n" +
-        "     Conecta este chat con tu cuenta. El código se genera en la web y dura 10 minutos.\n" +
+        "     Conecta este chat con tu cuenta. El código se genera en la web y dura 60 minutos.\n" +
         "\n" +
         "/ayuda\n" +
         "     Muestra este mensaje.\n" +
@@ -53,7 +53,7 @@ public static class TelegramMessages
     public const string LinkFailed =
         "❌ No pude vincular tu cuenta.\n" +
         "\n" +
-        "El código es inválido, ya se usó o caducó (dura 10 minutos).\n" +
+        "El código es inválido, ya se usó o caducó (dura 60 minutos).\n" +
         "Genera uno nuevo en la web y vuelve a enviarlo.";
 
     public const string LinkOk =

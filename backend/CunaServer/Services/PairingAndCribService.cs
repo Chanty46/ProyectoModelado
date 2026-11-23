@@ -6,21 +6,24 @@ namespace CunaServer.Services;
 
 public sealed class PairingAndCribService
 {
-    public const int PairingWindowMinutes = 10;
+    public const int PairingWindowMinutes = 60;
 
     private readonly IFamilyAccountRepository _accountRepo;
     private readonly IDeviceTelemetryRepository _deviceRepo;
     private readonly DeviceTcpServer _tcpServer;
+    private readonly int _pairingWindowMinutes;
     private readonly ConcurrentDictionary<Guid, DateTimeOffset> _pairingWindowsByFamily = new();
 
     public PairingAndCribService(
         IFamilyAccountRepository accountRepo,
         IDeviceTelemetryRepository deviceRepo,
-        DeviceTcpServer tcpServer)
+        DeviceTcpServer tcpServer,
+        IConfiguration? configuration = null)
     {
         _accountRepo = accountRepo;
         _deviceRepo = deviceRepo;
         _tcpServer = tcpServer;
+        _pairingWindowMinutes = ParseClampedInt(configuration?["PAIRING_WINDOW_MINUTES"], PairingWindowMinutes, 5, 1440);
     }
 
     public async Task<ServiceResult<OpenPairingWindowResponse>> OpenPairingWindowAsync(
@@ -34,11 +37,11 @@ public sealed class PairingAndCribService
             return ServiceResult<OpenPairingWindowResponse>.Forbidden(forbidden!);
         }
 
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(PairingWindowMinutes);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(_pairingWindowMinutes);
         _pairingWindowsByFamily[membership.FamilyId] = expiresAt;
 
         return ServiceResult<OpenPairingWindowResponse>.Ok(
-            new OpenPairingWindowResponse(expiresAt, PairingWindowMinutes));
+            new OpenPairingWindowResponse(expiresAt, _pairingWindowMinutes));
     }
 
     public async Task<ServiceResult<ClaimDeviceResponse>> ClaimDeviceAsync(
@@ -62,7 +65,7 @@ public sealed class PairingAndCribService
             DateTimeOffset.UtcNow >= windowExpires)
         {
             return ServiceResult<ClaimDeviceResponse>.BadRequest(
-                "La ventana de emparejamiento de 10 minutos no está abierta o ha expirado. Pulsa 'Agregar dispositivo' primero.");
+                $"La ventana de emparejamiento de {_pairingWindowMinutes} minutos no está abierta o ha expirado. Pulsa 'Agregar dispositivo' primero.");
         }
 
         var deviceId = (request.DeviceId ?? "").Trim();
@@ -423,4 +426,7 @@ public sealed class PairingAndCribService
             attemptedAction,
             clientIp,
             ct);
+
+    private static int ParseClampedInt(string? raw, int fallback, int min, int max)
+        => int.TryParse(raw, out var value) ? Math.Clamp(value, min, max) : fallback;
 }

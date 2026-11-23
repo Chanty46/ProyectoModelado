@@ -129,4 +129,40 @@ public class DatabaseMigrationSchemaTests
         Assert.Contains("SET LOCAL ROLE authenticated;", testSql);
         Assert.Contains("ROLLBACK;", testSql);
     }
+
+    [Fact]
+    public void DefinitiveSupabaseMigration_DefinesMobileRpcsColumnProtectionAndRf33WithoutUsingTrue()
+    {
+        var path = Path.Combine(
+            GetRepoRoot(),
+            "supabase",
+            "migrations",
+            "20261123120000_esquema_definitivo_movil_y_seguridad.sql");
+
+        Assert.True(File.Exists(path), $"No se encontró la migración definitiva en {path}");
+        var sql = File.ReadAllText(path);
+        var sqlWithoutComments = Regex.Replace(sql, @"--.*$", "", RegexOptions.Multiline);
+
+        Assert.DoesNotMatch(new Regex(@"USING\s*\(\s*true\s*\)", RegexOptions.IgnoreCase), sqlWithoutComments);
+        Assert.DoesNotMatch(new Regex(@"WITH\s+CHECK\s*\(\s*true\s*\)", RegexOptions.IgnoreCase), sqlWithoutComments);
+
+        Assert.Contains("CREATE TABLE IF NOT EXISTS public.comandos", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS token_dispositivo text", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS token_expira_en timestamptz", sql);
+        Assert.Contains("ALTER TABLE public.comandos FORCE ROW LEVEL SECURITY;", sql);
+        Assert.Contains("ALTER TABLE public.cunas FORCE ROW LEVEL SECURITY;", sql);
+        Assert.Contains("CREATE OR REPLACE FUNCTION public.dispositivo_comandos_pendientes(", sql);
+        Assert.Contains("CREATE OR REPLACE FUNCTION public.dispositivo_confirmar_comando(", sql);
+        Assert.Contains("CREATE OR REPLACE FUNCTION public.rotar_token_dispositivo_cuna(", sql);
+        Assert.Contains("INSERT INTO public.uso_juguetes", sql);
+
+        var secDefMatches = Regex.Matches(sql, @"SECURITY\s+DEFINER\s+SET\s+search_path\s*=\s*''", RegexOptions.IgnoreCase);
+        Assert.Equal(3, secDefMatches.Count);
+
+        // La lista de columnas SELECT para authenticated nunca debe incluir token_dispositivo
+        var grantBlock = Regex.Match(sqlWithoutComments, @"GRANT SELECT\s*\(([^)]+)\)\s*ON public\.cunas TO authenticated;", RegexOptions.Singleline);
+        Assert.True(grantBlock.Success, "Falta GRANT SELECT por columnas en public.cunas para authenticated");
+        Assert.DoesNotContain("token_dispositivo", grantBlock.Groups[1].Value, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ultimo_heartbeat", grantBlock.Groups[1].Value, StringComparison.OrdinalIgnoreCase);
+    }
 }
