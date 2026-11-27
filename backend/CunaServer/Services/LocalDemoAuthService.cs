@@ -404,7 +404,10 @@ public sealed class LocalDemoAuthService
             using var client = _httpClientFactory.CreateClient("SupabaseAuthAdmin");
             client.BaseAddress = new Uri($"{_supabaseUrl}/auth/v1/");
             client.DefaultRequestHeaders.Add("apikey", _supabaseSecretKey);
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _supabaseSecretKey);
+            if (PostgrestClientHelper.IsJwtApiKey(_supabaseSecretKey))
+            {
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _supabaseSecretKey);
+            }
 
             using var checkRes = await client.GetAsync($"admin/users/{DemoUserId}", ct);
             if (checkRes.IsSuccessStatusCode)

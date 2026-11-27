@@ -51,10 +51,11 @@ class Rest:
         self.base = base_url.rstrip("/") + "/rest/v1/"
         self.headers = {
             "apikey": secret_key,
-            "Authorization": f"Bearer {secret_key}",
             "Content-Type": "application/json",
             "Prefer": "return=representation",
         }
+        if not secret_key.startswith("sb_") and secret_key.count(".") == 2:
+            self.headers["Authorization"] = f"Bearer {secret_key}"
 
     def call(self, method: str, path: str, body: object | None = None) -> list[dict]:
         data = json.dumps(body).encode() if body is not None else None

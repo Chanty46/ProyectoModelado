@@ -91,9 +91,12 @@ def verify_supabase_connection() -> bool:
         print("[AVISO] backend/.env no tiene SUPABASE_SECRET_KEY (el backend seguirá en modo InMemory).")
         ok = False
     else:
+        headers = {"apikey": secret_key}
+        if not secret_key.startswith("sb_") and secret_key.count(".") == 2:
+            headers["Authorization"] = f"Bearer {secret_key}"
         req = urllib.request.Request(
             f"{supa_url}/rest/v1/familias?select=id&limit=1",
-            headers={"apikey": secret_key, "Authorization": f"Bearer {secret_key}"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:

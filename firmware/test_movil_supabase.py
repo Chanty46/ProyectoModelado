@@ -67,7 +67,7 @@ class _FakeResponse:
         pass
 
 
-def load_firmware(pending_commands: list[dict] | None = None):
+def load_firmware(pending_commands: list[dict] | None = None, anon_key: str = "sb_publishable_prueba"):
     """Carga main.py con módulos falsos. Devuelve (módulo, registro de cuadros, llamadas RPC)."""
     machine = types.ModuleType("machine")
     machine.Pin = _FakePin
@@ -114,7 +114,7 @@ def load_firmware(pending_commands: list[dict] | None = None):
     config.WIFI_SSID = "red-prueba"
     config.WIFI_PASS = "x"
     config.SUPABASE_URL = "https://ejemplo.supabase.co"
-    config.SUPABASE_ANON_KEY = "sb_publishable_prueba"
+    config.SUPABASE_ANON_KEY = anon_key
     config.CUNA_ID = "cuna-prueba"
     config.TOKEN_DISPOSITIVO = "token-prueba"
     config.CONSULTAR_CADA_MS = 1000
@@ -224,6 +224,16 @@ class MovilSupabaseTests(unittest.TestCase):
         confirms = [(b["p_id"], b["p_estado"]) for name, b in rpc_calls if name == "dispositivo_confirmar_comando"]
         self.assertEqual(confirms, [("c1", "confirmado"), ("c2", "error"), ("c3", "confirmado")])
         self.assertFalse(module.activo)
+
+    def test_headers_omit_bearer_for_sb_publishable_and_include_it_for_jwt(self):
+        mod_sb, _, _ = load_firmware(anon_key="sb_publishable_clave_ficticia")
+        self.assertEqual(mod_sb.HEADERS["apikey"], "sb_publishable_clave_ficticia")
+        self.assertNotIn("Authorization", mod_sb.HEADERS)
+
+        fake_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYW5vbiJ9.firmaficticia"
+        mod_jwt, _, _ = load_firmware(anon_key=fake_jwt)
+        self.assertEqual(mod_jwt.HEADERS["apikey"], fake_jwt)
+        self.assertEqual(mod_jwt.HEADERS.get("Authorization"), "Bearer " + fake_jwt)
 
 
 if __name__ == "__main__":

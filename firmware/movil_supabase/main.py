@@ -166,9 +166,10 @@ def conectar_wifi():
 # ---------- Supabase (funciones RPC) ----------
 HEADERS = {
     "apikey": config.SUPABASE_ANON_KEY,
-    "Authorization": "Bearer " + config.SUPABASE_ANON_KEY,
     "Content-Type": "application/json",
 }
+if not config.SUPABASE_ANON_KEY.startswith("sb_") and config.SUPABASE_ANON_KEY.count(".") == 2:
+    HEADERS["Authorization"] = "Bearer " + config.SUPABASE_ANON_KEY
 
 
 def rpc(nombre, datos):
