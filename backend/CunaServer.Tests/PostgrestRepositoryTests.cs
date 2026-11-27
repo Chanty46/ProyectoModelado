@@ -91,7 +91,7 @@ public class PostgrestRepositoryTests
         Assert.All(handler.Requests, r =>
         {
             Assert.Equal(FakeSecretKey, r.ApiKeyHeader);
-            Assert.Equal($"Bearer {FakeSecretKey}", r.AuthorizationHeader);
+            Assert.Null(r.AuthorizationHeader);
         });
 
         var famPost = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Post && r.RelativePathAndQuery == "familias");

@@ -29,6 +29,31 @@ internal sealed class PostgrestClientHelper
     };
 
     /// <summary>
+    /// Determina si una clave de Supabase es un JWT clásico (<c>eyJ...</c>) que requiere
+    /// cabecera <c>Authorization: Bearer</c>. Las claves modernas (<c>sb_secret_...</c> /
+    /// <c>sb_publishable_...</c>) son opacas y solo deben enviarse en <c>apikey</c>.
+    /// </summary>
+    internal static bool IsJwtApiKey(string apiKey)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey) ||
+            apiKey.StartsWith("sb_", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var dotCount = 0;
+        foreach (var ch in apiKey)
+        {
+            if (ch == '.')
+            {
+                dotCount++;
+            }
+        }
+
+        return dotCount == 2;
+    }
+
+    /// <summary>
     /// Inicializa el cliente HTTP con la URL base <c>/rest/v1/</c> y los encabezados
     /// de autenticación requeridos por Supabase usando exclusivamente <c>SUPABASE_SECRET_KEY</c>.
     /// </summary>
@@ -36,7 +61,7 @@ internal sealed class PostgrestClientHelper
     {
         _http = httpClient;
         var supabaseUrl = (configuration["SUPABASE_URL"] ?? "").TrimEnd('/');
-        var secretKey = configuration["SUPABASE_SECRET_KEY"] ?? "";
+        var secretKey = (configuration["SUPABASE_SECRET_KEY"] ?? "").Trim();
 
         if (!string.IsNullOrWhiteSpace(supabaseUrl))
         {
@@ -47,7 +72,9 @@ internal sealed class PostgrestClientHelper
         {
             _http.DefaultRequestHeaders.Remove("apikey");
             _http.DefaultRequestHeaders.Add("apikey", secretKey);
-            _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secretKey);
+            _http.DefaultRequestHeaders.Authorization = IsJwtApiKey(secretKey)
+                ? new AuthenticationHeaderValue("Bearer", secretKey)
+                : null;
         }
     }
 
